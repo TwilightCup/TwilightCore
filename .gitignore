@@ -1,0 +1,20 @@
+# Build outputs
+bin/
+obj/
+
+# macOS
+.DS_Store
+
+# Internal docs (local only)
+docs/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Rider / VS for Mac
+*.pidb
+*.userprefs

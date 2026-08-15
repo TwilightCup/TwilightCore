@@ -1,0 +1,200 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>TwilightCore</AssemblyName>
+    <Product>TwilightCore</Product>
+    <Version>0.1.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>TwilightCore</RootNamespace>
+    <NoStdLib>true</NoStdLib>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <RestoreSources></RestoreSources>
+  </PropertyGroup>
+
+  <!-- Base class libraries from Unity Mono (net35-equivalent) -->
+  <ItemGroup>
+    <Reference Include="mscorlib">
+      <HintPath>$(GAME_MANAGED)/mscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(GAME_MANAGED)/System.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(GAME_MANAGED)/System.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Xml">
+      <HintPath>$(GAME_MANAGED)/System.Xml.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Configuration">
+      <HintPath>$(GAME_MANAGED)/System.Configuration.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Security">
+      <HintPath>$(GAME_MANAGED)/System.Security.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- BepInEx & Harmony -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BEPINEX_CORE)/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Harmony">
+      <HintPath>$(BEPINEX_CORE)/BepInEx.Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BEPINEX_CORE)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    BouncyCastle (vendored): provides managed TLS1.2 for the WebSocket handshake,
+    bypassing Unity 2017's too-old Mono SslStream. Compiled against this DLL and
+    deployed loose next to TwilightCore.dll in BepInEx/plugins/ (Private=false so
+    the build doesn't copy it — it's placed manually at deploy time; BepInEx loads
+    every DLL in plugins/, so the plugin's reference resolves at load).
+
+    IMPORTANT: use the **net40** build, not netstandard2.0. The netstandard2.0
+    build references `netstandard 2.0.0.0`, a facade Unity 2017.4's Mono does NOT
+    ship — loading it throws `Could not load file or assembly 'netstandard'`. The
+    net40 build references only mscorlib+System 4.0, which Unity's Mono has.
+    Source: Portable.BouncyCastle 1.9.0, lib/net40/BouncyCastle.Crypto.dll
+  -->
+  <ItemGroup>
+    <Reference Include="BouncyCastle.Crypto">
+      <HintPath>$(MSBuildThisFileDirectory)lib/pbc_net40/BouncyCastle.Crypto.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Game assemblies -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GAME_MANAGED)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HumanAPI">
+      <HintPath>$(GAME_MANAGED)/HumanAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Unity engine modules -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VRModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.VRModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VideoModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.VideoModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityAnalyticsModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UnityAnalyticsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestWWWModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UnityWebRequestWWWModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestTextureModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UnityWebRequestTextureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UNETModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.UNETModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.AIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AccessibilityModule">
+      <HintPath>$(GAME_MANAGED)/UnityEngine.AccessibilityModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Default paths point at the macOS Steam install. Override on the command line for
+    other machines, e.g.:
+      dotnet build -c Release \
+        -p:GAME_MANAGED="/path/Human_Data/Managed" \
+        -p:BEPINEX_CORE="/path/BepInEx/core"
+  -->
+  <PropertyGroup>
+    <GAME_MANAGED>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/Human.app/Contents/Resources/Data/Managed</GAME_MANAGED>
+    <BEPINEX_CORE>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/BepInEx/core</BEPINEX_CORE>
+  </PropertyGroup>
+
+</Project>
