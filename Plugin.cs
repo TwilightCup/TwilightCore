@@ -71,6 +71,11 @@ public class Plugin : BaseUnityPlugin
         DontDestroyOnLoad(chatGo);
         var chatView = chatGo.AddComponent<ChatView>();
 
+        // Collection info HUD (top-right, two lines, single colour) during runs.
+        var hudGo = new GameObject("TwilightCollectionInfoHud");
+        DontDestroyOnLoad(hudGo);
+        hudGo.AddComponent<Hud.CollectionInfoHud>();
+
         // Networking: REST login → WebSocket (heartbeat / reconnect handled inside).
         var netGo = new GameObject("TwilightClient");
         DontDestroyOnLoad(netGo);

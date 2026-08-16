@@ -604,6 +604,56 @@ public class CollectionManager : MonoBehaviour
         return levelId;
     }
 
+    /// <summary>
+    /// English display name for a level, regardless of the player's current
+    /// language — the same "LEVEL/&lt;id&gt;" term but read from the table's
+    /// English column (overrideLanguage in GetTermTranslation is a column
+    /// index; ColumnsName.English == 3). Used by the collection info HUD.
+    /// Fallbacks mirror <see cref="GetLocalizedLevelName"/>.
+    /// </summary>
+    public static string GetEnglishLevelName(string levelId)
+    {
+        if (string.IsNullOrEmpty(levelId))
+            return levelId;
+
+        var type = ResolveLevelType(levelId);
+
+        if (type == WorkshopItemSource.BuiltIn || type == WorkshopItemSource.EditorPick)
+        {
+            // The campaign shows Intro_Reprise as "Reprise" in every language.
+            if (levelId == "Intro_Reprise")
+                return "Reprise";
+
+            string english;
+            try
+            {
+                english = I2.Loc.LocalizationManager.GetTermTranslation(
+                    "LEVEL/" + levelId, (int)I2.Loc.LocalizationManager.ColumnsName.English);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[CollectionManager] English localisation lookup failed for '{levelId}': {ex.Message}");
+                english = null;
+            }
+            if (!string.IsNullOrEmpty(english) && !english.StartsWith("Missing:", StringComparison.Ordinal))
+                return english;
+
+            // No LEVEL/ term (e.g. a newly added level): fall back to the
+            // startup-time metadata title (EditorPick only).
+            var metaFallback = ResolveWorkshopMetadata(levelId);
+            if (metaFallback != null && !string.IsNullOrEmpty(metaFallback.title))
+                return metaFallback.title;
+            return levelId;
+        }
+
+        // Workshop (Subscription / LocalWorkshop): author-provided title.
+        var meta2 = ResolveWorkshopMetadata(levelId);
+        if (meta2 != null && !string.IsNullOrEmpty(meta2.title))
+            return meta2.title;
+        return levelId;
+    }
+
     // ── Level launching ───────────────────────────────────────────
 
     private void LaunchLevel(string levelId)

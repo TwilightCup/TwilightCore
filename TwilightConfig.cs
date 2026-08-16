@@ -42,6 +42,14 @@ internal static class TwilightConfig
     /// <summary>Use the stand-in simulated timer that reports completion/forfeit (replaced by the real timer later).</summary>
     public static ConfigEntry<bool> EnableSimTimer;
 
+    // ── HUD ───────────────────────────────────────────────────────
+    /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
+    public static ConfigEntry<bool> HudEnabled;
+    /// <summary>HUD text colour as hex (RRGGBB or RRGGBBAA, optional #). Single colour, no gradient.</summary>
+    public static ConfigEntry<string> HudTextColor;
+    /// <summary>HUD font size (same default as TwilightTimer's timer rows).</summary>
+    public static ConfigEntry<int> HudFontSize;
+
     // ── Chat ───────────────────────────────────────────────────────
     /// <summary>Briefly show the chat log (no input box) when a message arrives, then fade out.</summary>
     public static ConfigEntry<bool> ChatPopupEnabled;
@@ -77,6 +85,10 @@ internal static class TwilightConfig
         ChatToggleHotkey = config.Bind("Chat", "ToggleHotkey", "Ctrl+T",
             "Hotkey to open/close the chat console. Modifiers joined by '+', main key last, e.g. \"Ctrl+T\", \"Ctrl+Shift+Y\", \"Alt+F8\", \"F8\". " +
             "\"Ctrl\" also matches the Cmd (⌘) key on macOS. Restart not required — also re-read by `twi reload`.");
+
+        HudEnabled = config.Bind("HUD", "Enabled", true, "Show the collection info HUD (top-right, two lines) while a collection run is active.");
+        HudTextColor = config.Bind("HUD", "TextColor", "FFD94C", "HUD text colour as hex (RRGGBB or RRGGBBAA, optional leading #). Single colour, no gradient.");
+        HudFontSize = config.Bind("HUD", "FontSize", 18, "HUD font size.");
 
         VerboseNetLog = config.Bind("Debug", "VerboseNetLog", false, "Log every sent/received WebSocket frame.");
 

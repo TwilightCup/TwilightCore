@@ -40,6 +40,9 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
+| `HUD.Enabled` | `true` | 合集运行期间在屏幕右上角显示两行合集信息（样式仿计时器：粗体纯文本、单色无渐变） |
+| `HUD.TextColor` | `FFD94C` | HUD 文本颜色，hex 编码（`RRGGBB` 或 `RRGGBBAA`，可带 `#`） |
+| `HUD.FontSize` | `18` | HUD 字号（与 TwilightTimer 计时器默认一致） |
 | `Debug.VerboseNetLog` | `false` | 打印每条收发帧 |
 
 ## 控制台命令
