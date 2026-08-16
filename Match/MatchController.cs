@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using TwilightCore.Chat;
+using TwilightCore.LeaderboardInternal;
 using TwilightCore.Net;
 using TwilightCore.Timer;
 
@@ -144,6 +145,7 @@ internal sealed class MatchController
         // Server contract (SrvAuthOk) sends match_id / match_name, not session_*.
         _session.SessionId = authOk.GetString("match_id");
         _session.SessionName = authOk.GetString("match_name");
+        LeaderboardTracker.OnAuthenticated(authOk); // both seats' display names + local seat
         _chat.ShowInfo($"[Twilight] Connected: {_session.DisplayName} ({_session.Seat}) — {_session.SessionName ?? "(unnamed match)"}");
 
         // Align match mode with the (possibly mid-round) session state we're
@@ -206,10 +208,10 @@ internal sealed class MatchController
                 _chat.DisplaySystem($"Round started: {msg.GetString("pick_code")} - {msg.GetString("pick_name")}", "round_start");
                 break;
             case Msg.PlayerStatus:
-                Plugin.Logger.LogInfo($"[Twilight] player_status seat={msg.GetString("seat")} status={msg.GetInt("status")} idx={msg.GetInt("current_level_index")}");
+                LeaderboardTracker.OnPlayerStatus(msg);
                 break;
             case Msg.LevelTimeUpdate:
-                Plugin.Logger.LogInfo($"[Twilight] level_time_update seat={msg.GetString("seat")} idx={msg.GetInt("level_index")} ms={msg.GetLong("this_level_ms")}");
+                LeaderboardTracker.OnLevelTimeUpdate(msg);
                 break;
             case Msg.RoundResult:
                 HandleRoundResult(msg);
@@ -220,6 +222,7 @@ internal sealed class MatchController
             case Msg.MatchEnd:
                 _chat.DisplaySystem($"Match over — winner: {msg.GetString("winner")}", "match_end");
                 Reporter.Stop();
+                LeaderboardTracker.Clear();
                 SetMatchMode(false); // match over — restore the player's local setup (T2.4)
                 break;
             case Msg.CounterState:
@@ -248,7 +251,10 @@ internal sealed class MatchController
         Plugin.Logger.LogInfo($"[Twilight] phase {prev} → {_session.Phase}" + (string.IsNullOrEmpty(rid) ? "" : $" round={rid}"));
 
         if (_session.Phase != MatchPhase.InRound && prev == MatchPhase.InRound)
+        {
             Reporter.Stop();
+            LeaderboardTracker.Clear(); // round over — GetSnapshot() returns null from here
+        }
         // Reporter StartRound is driven by round_start (which carries pick + collection).
 
         // Every phase transition re-aligns the lock (§2.2): PREP→COUNTDOWN→
@@ -284,8 +290,13 @@ internal sealed class MatchController
             Plugin.Logger.LogError("[Twilight] failed to start server collection: " + err);
             _chat.DisplaySystem("Failed to load collection: " + err, "error");
             Reporter.Stop();
+            LeaderboardTracker.Clear(); // the round never really started here
             return;
         }
+
+        // Leaderboard snapshot is created here — the first PlayingLevel edge
+        // (and the first player_status) may follow immediately.
+        LeaderboardTracker.OnRoundStart(_session.RoundId, pickDict, RoundIngestion.LastResolvedLevels);
     }
 
     private void HandleRoundResult(Dictionary<string, object> msg)

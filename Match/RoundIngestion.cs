@@ -20,6 +20,19 @@ namespace TwilightCore.Match;
 /// </summary>
 internal static class RoundIngestion
 {
+    /// <summary>
+    /// The levels resolved from the last successful <see cref="TryStart"/>,
+    /// PRE-SINGLE-expansion (i.e. the collection's own ids, not the
+    /// retry-expanded run list). Consumed by the leaderboard snapshot
+    /// (LevelIds must be index-true for MULTI collections).
+    /// </summary>
+    public static List<string> LastResolvedLevels { get; private set; }
+
+    /// <summary>True when the pick is SINGLE (tolerant default MULTI, as in TryStart).</summary>
+    public static bool IsSinglePick(Dictionary<string, object> pick)
+        => (PickType)(pick != null ? pick.GetInt("type", (int)PickType.Multi) : (int)PickType.Multi)
+           == PickType.Single;
+
     public static bool TryStart(
         Dictionary<string, object> pick,
         Dictionary<string, object> collection,
@@ -42,12 +55,12 @@ internal static class RoundIngestion
             levels.Add(l == null ? "" : l.ToString());
 
         string name = ResolveName(collection, pick);
+        LastResolvedLevels = levels;
 
         // SINGLE 自动编排：单关 + retry_count → 重复 retry_count 次。
-        var pickType = (PickType)(pick != null ? pick.GetInt("type", (int)PickType.Multi) : (int)PickType.Multi);
-        int retry = pick != null ? pick.GetInt("retry_count", 0) : 0;
-        if (pickType == PickType.Single && retry > 0 && levels.Count == 1)
+        if (IsSinglePick(pick) && pick != null && pick.GetInt("retry_count", 0) > 0 && levels.Count == 1)
         {
+            int retry = pick.GetInt("retry_count", 0);
             string only = levels[0];
             levels = new List<string>(retry);
             for (int i = 0; i < retry; i++) levels.Add(only);
