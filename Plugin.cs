@@ -97,6 +97,12 @@ public class Plugin : BaseUnityPlugin
         // Patches: false-start lock (chat is a standalone OnGUI console, no NetChat patching).
         ReadyLockPatches.Apply();
 
+        // Menu fall-speed limiter: while connected to the match server, clamp the
+        // menu ragdoll's downward speed (anti-fall off the menu scenery).
+        var fallLimiter = new GameObject("TwilightMenuFallLimiter");
+        DontDestroyOnLoad(fallLimiter);
+        fallLimiter.AddComponent<Physics.MenuFallSpeedLimiter>();
+
         // Console commands (twi connect <host> [port] / disconnect / status / probe / sim / finish …).
         TwilightCommands.Init(client, session, fallback as SimulatedTimer, match);
 

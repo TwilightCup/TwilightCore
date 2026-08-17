@@ -46,6 +46,8 @@ internal static class TwilightConfig
     /// level as the one just played (seconds). 0 disables the detour (direct reload).
     /// </summary>
     public static ConfigEntry<float> SameLevelReloadMinDwell;
+    /// <summary>Clamp fall speed in the main menu while connected to the match server (anti-fall).</summary>
+    public static ConfigEntry<bool> EnableMenuFallLimit;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -88,6 +90,8 @@ internal static class TwilightConfig
             "When a collection run advances to the SAME level as the one just played, " +
             "detour through the 'Empty' scene for at least this many seconds before reloading it " +
             "(clear visual gap between consecutive plays of one level). 0 = disable the detour.");
+        EnableMenuFallLimit = config.Bind("Features", "EnableMenuFallLimit", true,
+            "While connected to the match server, clamp the main-menu ragdoll's fall speed (anti-fall).");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");
