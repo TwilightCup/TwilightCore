@@ -41,6 +41,11 @@ internal static class TwilightConfig
     public static ConfigEntry<bool> EnableReadyLock;
     /// <summary>Use the stand-in simulated timer that reports completion/forfeit (replaced by the real timer later).</summary>
     public static ConfigEntry<bool> EnableSimTimer;
+    /// <summary>
+    /// Minimum dwell in the 'Empty' scene when a collection run advances to the SAME
+    /// level as the one just played (seconds). 0 disables the detour (direct reload).
+    /// </summary>
+    public static ConfigEntry<float> SameLevelReloadMinDwell;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -79,6 +84,10 @@ internal static class TwilightConfig
 
         EnableReadyLock = config.Bind("Features", "EnableReadyLock", true, "Block manual level starts during PREP/COUNTDOWN.");
         EnableSimTimer = config.Bind("Features", "EnableSimTimer", true, "Send simulated completion/forfeit reports so the match flow can be tested without the real timer.");
+        SameLevelReloadMinDwell = config.Bind("Features", "SameLevelReloadMinDwell", 1f,
+            "When a collection run advances to the SAME level as the one just played, " +
+            "detour through the 'Empty' scene for at least this many seconds before reloading it " +
+            "(clear visual gap between consecutive plays of one level). 0 = disable the detour.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

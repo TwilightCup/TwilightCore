@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using Multiplayer;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace TwilightCore;
 
@@ -248,6 +249,22 @@ public class CollectionManager : MonoBehaviour
         var levelId = col.Levels[CurrentLevelIndex];
         Plugin.Logger.LogInfo($"Collection run advancing: '{col.Name}' level {CurrentLevelIndex + 1}/{col.Levels.Count}: {levelId}");
 
+        // Same level back-to-back (e.g. SINGLE retry expansion [A, A, A]): the
+        // direct reload is visually seamless — the player cannot tell a new
+        // attempt started. Detour through the 'Empty' scene (like TwilightTimer's
+        // one-key retry) for a clear gap instead. Skips (lc skip / twi sim skip)
+        // exempt: they jump past the level, not into a fresh attempt of it.
+        float dwell = Mathf.Max(0f, TwilightConfig.SameLevelReloadMinDwell?.Value ?? 1f);
+        string prevLevelId = col.Levels[CurrentLevelIndex - 1];
+        if (!skipped && dwell > 0f && string.Equals(prevLevelId, levelId, StringComparison.Ordinal))
+        {
+            Plugin.Logger.LogInfo(
+                $"Same level back-to-back ('{levelId}'); empty-scene transition ({dwell:0.##}s).");
+            _pendingSameLevelTransition = StartCoroutine(
+                SameLevelTransition(levelId, dwell, CurrentCollectionIndex, CurrentLevelIndex));
+            return;
+        }
+
         LaunchLevel(levelId);
     }
 
@@ -297,6 +314,22 @@ public class CollectionManager : MonoBehaviour
     public bool IsDelayedCommandPending => _pendingDelayedCommand != null;
 
     private Coroutine _pendingDelayedCommand;
+
+    /// <summary>
+    /// The pending same-level empty-scene transition coroutine, if any.
+    /// Unlike a delayed command this is NEVER cancelled once started:
+    /// the current level has already been unloaded, so stopping mid-way
+    /// would strand the player in the 'Empty' scene. The coroutine runs
+    /// to completion and a guard at its end decides whether to launch.
+    /// </summary>
+    private Coroutine _pendingSameLevelTransition;
+
+    /// <summary>
+    /// True while a same-level empty-scene transition is in progress
+    /// (level unloaded, dwelling in 'Empty' before the next launch).
+    /// lc restart/skip and twi sim level_done/skip are refused meanwhile.
+    /// </summary>
+    public bool IsSameLevelTransitionPending => _pendingSameLevelTransition != null;
 
     /// <summary>
     /// Schedule an action to run after <paramref name="delaySeconds"/>.
@@ -358,6 +391,73 @@ public class CollectionManager : MonoBehaviour
         }
 
         action();
+    }
+
+    /// <summary>
+    /// The same-level advance path (like TwilightTimer's RetryAction reload):
+    /// tear the current level down → load the 'Empty' transition scene → hold
+    /// it until <paramref name="minDwell"/> seconds have elapsed since the
+    /// advance → launch the next (identical) level. The dwell uses
+    /// <c>Time.unscaledTime</c> (real time) so it is unaffected by timeScale.
+    ///
+    /// Never cancelled once started (the level is already unloaded when the
+    /// first frame runs — stopping mid-way would strand the player in 'Empty');
+    /// instead a guard at the end decides whether the launch still makes sense.
+    /// LevelStarted fires inside the final LaunchLevel (NOT on advance) so the
+    /// dwell is not counted into the next level's time.
+    /// </summary>
+    private IEnumerator SameLevelTransition(string levelId, float minDwell,
+        int expectedCollectionIndex, int expectedLevelIndex)
+    {
+        // Measured from the advance (this coroutine's first frame runs the
+        // same frame AdvanceToNextLevel called StartCoroutine).
+        float start = Time.unscaledTime;
+
+        // 1. Tear the running level down. AfterUnload sets
+        //    currentLevelNumber = -1, state = Inactive — which lets the final
+        //    launch actually reload the scene (it would otherwise degrade into
+        //    a checkpoint respawn when the level number matches).
+        var game = Game.instance;
+        if (game != null)
+            game.UnloadLevel();
+
+        // 2. Load the empty transition scene, then hold it for the minimum
+        //    dwell. Yield a frame after LoadScene so the scene activates.
+        SceneManager.LoadScene("Empty");
+        yield return null;
+        while (Time.unscaledTime - start < minDwell)
+            yield return null;
+
+        _pendingSameLevelTransition = null;
+
+        // 3. End guard. In the menu → the player left via PauseLeave (which
+        //    aborted the run); launching would fight the menu. Run active but
+        //    either index moved → a different collection/load is in flight
+        //    (a new round_start restarted the run — the collection index alone
+        //    is not enough: transient runs are both -1, but a restart resets
+        //    the level index to 0 while a same-level advance is always ≥ 1).
+        //    The lc / twi sim gates should have prevented this anyway.
+        //    Run inactive but index unchanged (server aborted the round
+        //    mid-dwell) → still launch, or the player would be stranded in
+        //    'Empty'; the run state is already down so the completion patches
+        //    will not advance or report anymore.
+        if (App.state == AppSate.Menu
+            || (IsInCollectionRun
+                && (CurrentCollectionIndex != expectedCollectionIndex
+                    || CurrentLevelIndex != expectedLevelIndex)))
+        {
+            Plugin.Logger.LogInfo(
+                "Same-level transition: level launch skipped (menu / run changed).");
+            yield break;
+        }
+        if (!IsInCollectionRun && CurrentLevelIndex != expectedLevelIndex)
+        {
+            Plugin.Logger.LogInfo(
+                "Same-level transition: level launch skipped (run ended, index moved on).");
+            yield break;
+        }
+
+        LaunchLevel(levelId);
     }
 
     /// <summary>

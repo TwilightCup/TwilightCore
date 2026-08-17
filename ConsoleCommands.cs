@@ -115,6 +115,15 @@ internal static class ConsoleCommands
             return;
         }
 
+        // Refuse while a same-level empty-scene transition is mid-flight: the
+        // index has already advanced to the not-yet-launched level, so another
+        // advance here would skip it, and a restart would race the pending launch.
+        if (mgr.IsSameLevelTransitionPending)
+        {
+            Print("lc: a same-level transition is in progress; wait for the next level to load.");
+            return;
+        }
+
         if (cmd == "restart")
             Restart(mgr, delaySeconds);
         else

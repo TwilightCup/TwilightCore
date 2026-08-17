@@ -107,13 +107,21 @@ internal static class TwilightCommands
                 long? ms = null;
                 if (parts.Length >= 3 && long.TryParse(parts[2], out long v)) ms = v;
                 _timer.PrepareSimLevelMs(ms);
-                if (mgr != null && mgr.IsInCollectionRun) mgr.AdvanceToNextLevel(false);
-                else TwilightLog.Print("twi sim: no active collection run.");
+                if (mgr == null || !mgr.IsInCollectionRun)
+                    TwilightLog.Print("twi sim: no active collection run.");
+                else if (mgr.IsSameLevelTransitionPending)
+                    TwilightLog.Print("twi sim: a same-level transition is in progress.");
+                else
+                    mgr.AdvanceToNextLevel(false);
                 return;
             }
             case "skip":
-                if (mgr != null && mgr.IsInCollectionRun) mgr.AdvanceToNextLevel(true);
-                else TwilightLog.Print("twi sim: no active collection run.");
+                if (mgr == null || !mgr.IsInCollectionRun)
+                    TwilightLog.Print("twi sim: no active collection run.");
+                else if (mgr.IsSameLevelTransitionPending)
+                    TwilightLog.Print("twi sim: a same-level transition is in progress.");
+                else
+                    mgr.AdvanceToNextLevel(true);
                 return;
             case "complete":
             {
