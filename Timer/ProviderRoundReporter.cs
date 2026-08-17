@@ -111,10 +111,29 @@ namespace TwilightCore.Timer
                 { "this_level_ms", seg.DurationMs },
             };
             if (!_isSingle) payload["total_ms"] = seg.TotalMs;
+
+            // 完成时刻的有效性判定（INVALID_ATTEMPT_REQ §3.1）：必须在事件处理器
+            // 内同步查询——顺序契约是 TwilightTimer 在 SegmentCompleted 返回之后
+            // 才清尝试标记，延迟到帧末/队列会看到已清除的空集。非空 = 该次
+            // 尝试无效（SINGLE 不计分 / MULTI informational 供裁判仲裁）。
+            // 元素格式 "<Reason>"，不可原谅原因带 "!" 前缀（如 "!CheatCode"）。
+            var marks = _provider.GetActiveInvalidMarks();
+            if (marks != null && marks.Count > 0)
+                payload["invalid_reasons"] = new List<string>(FormatReasons(marks));
+
             Send(payload);
             Plugin.Logger.LogInfo(
                 $"[Timer] segment {seg.Index} done: {seg.DurationMs}ms" +
-                (!_isSingle ? $" total={seg.TotalMs}ms" : "") + ".");
+                (!_isSingle ? $" total={seg.TotalMs}ms" : "") +
+                (marks != null && marks.Count > 0
+                    ? $" invalid=[{string.Join(",", FormatReasons(marks))}]"
+                    : "") + ".");
+        }
+
+        /// <summary>标记 → 上报格式："<Reason>"，不可原谅带 "!" 前缀。</summary>
+        private static IEnumerable<string> FormatReasons(IList<InvalidMarkInfo> marks)
+        {
+            foreach (var m in marks) yield return (m.Unforgivable ? "!" : "") + m.Reason;
         }
 
         private void OnAttemptSkipped(int index)
