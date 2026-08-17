@@ -168,13 +168,19 @@ namespace TwilightCore.Timer
                 // 尝试（方案 A，无剩余尝试；retry 缺失时视同无剩余）才自动
                 // project_complete，其余情况由选手「结束本回合」显式触发
                 // （twilightcore-single-attempt-complete.md §3/§4）。
+                // 「是否最后一次」按尝试序号判定（本次通关的序号 = segments 末位
+                // 的 Index，段按完成顺序追加），不能用通关计数：含跳过时通关数
+                // 永远追不上次数上限，最后一次通关会被误判为还有剩余尝试
+                // （twilightcore-single-complete-after-skip.md §2）。
                 var segments = _provider.GetCompletedSegments();
-                int done = segments != null ? segments.Count : 0;
+                int lastIndex = segments != null && segments.Count > 0
+                    ? segments[segments.Count - 1].Index
+                    : -1;
                 int retry = _pick != null ? _pick.RetryCount : 0;
-                if (retry > 0 && done < retry)
+                if (retry > 0 && lastIndex + 1 < retry)
                 {
                     Plugin.Logger.LogInfo(
-                        $"[Timer] single run completed at attempt {done}/{retry} — NOT completing (attempts remain).");
+                        $"[Timer] single run completed at attempt {lastIndex + 1}/{retry} — NOT completing (attempts remain).");
                     return;
                 }
                 SendSingleProjectComplete();
@@ -202,20 +208,18 @@ namespace TwilightCore.Timer
             {
                 // 期望行为 §3 行 3：退出的若是最后一次尝试，该次本身也要计 N/A
                 // （attempt_skip），不能只发 project_complete 让裁判端漏掉明细。
-                // 判据：provider 已结束的段数（含本次退出——未通关段不进
-                // GetCompletedSegments，但退出意味着它不会再有结果）达到上限。
-                var segs = _provider.GetCompletedSegments();
-                int done = segs != null ? segs.Count : 0;
+                // 判据按尝试序号（事件参数 index），与 OnAttemptSkipped/OnRunCompleted
+                // 同口径——通关计数在含跳过时欠计数、序号也错。
                 int retry = _pick != null ? _pick.RetryCount : 0;
-                if (retry > 0 && done + 1 >= retry)
+                if (retry > 0 && index + 1 >= retry)
                 {
                     Send(new Dictionary<string, object>
                     {
                         { "type", Msg.AttemptSkip },
                         { "round_id", _roundId },
-                        { "attempt_index", done },
+                        { "attempt_index", index },
                     });
-                    Plugin.Logger.LogInfo($"[Timer] last attempt abandoned → attempt_skip idx={done}.");
+                    Plugin.Logger.LogInfo($"[Timer] last attempt abandoned → attempt_skip idx={index}.");
                 }
                 SendSingleProjectComplete();
                 Plugin.Logger.LogInfo("[Timer] incomplete exit with valid attempts → project_complete.");
