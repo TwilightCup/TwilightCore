@@ -42,11 +42,19 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private HeldScene _lastConsumed;   // status display only
     private Coroutine _pipeline;
 
-    // Scene-load plumbing: the sceneLoaded hook captures the handle for the
-    // pipeline (which does the dormify/discard decision once the op completes).
+    // Scene-load plumbing: the sceneLoaded hook captures + dormifies the scene
+    // (before it ever renders); the pipeline makes the keep/discard decision
+    // once its op completes.
     private string _awaitingSceneName;
     private Scene _pendingLoadedScene;
     private bool _gotPendingScene;
+
+    // Last held-scene unload, so a follow-up preload of the SAME scene name can
+    // wait for it (Unity 2017 queues scene ops, but same-name load/unload
+    // racing is flaky — a pick change to a collection sharing the first level
+    // hits exactly this).
+    private AsyncOperation _lastUnloadOp;
+    private string _lastUnloadName;
 
     // Drop requests are observed by the pipeline rather than acted on by
     // StopCoroutine — an in-flight additive LoadSceneAsync cannot be cancelled
@@ -360,6 +368,12 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         //    wait for after round_start) ──
         held.State = HeldSceneState.LoadingScene;
         Application.backgroundLoadingPriority = ThreadPriority.Low; // same setting the game uses (Game.cs:693)
+
+        // A just-dropped hold of the SAME scene may still be unloading — wait it
+        // out first (same-name load/unload racing on Unity 2017 is flaky).
+        if (_lastUnloadOp != null && _lastUnloadName == sceneName)
+            while (!_lastUnloadOp.isDone) yield return null;
+
         _awaitingSceneName = sceneName;
         _gotPendingScene = false;
         _pendingLoadedScene = default(Scene);
@@ -372,51 +386,66 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             yield break;
         }
         while (!op.isDone)
-        {
-            if (_dropRequested) { /* can't cancel on 2017.4 — wait it out, then unload */ }
-            yield return null;
-        }
+            yield return null;   // drops can't cancel an in-flight load on 2017.4 — the hook already dormified it; discard happens below
         _awaitingSceneName = null;
 
-        // The sceneLoaded hook captured the handle (it fires before isDone);
-        // a short safety wait in case of ordering quirks.
+        // The sceneLoaded hook captured + dormified the scene (it fires before
+        // isDone); a short safety wait in case of ordering quirks.
         int waits = 0;
         while (!_gotPendingScene && waits++ < 300) yield return null;
 
         if (!_gotPendingScene || !_pendingLoadedScene.IsValid())
         {
+            // Defensive: if a scene did load but the callback somehow missed,
+            // unload the stray by handle so it can't linger visibly.
+            if (_pendingLoadedScene.IsValid())
+                SceneManager.UnloadSceneAsync(_pendingLoadedScene);
             FailPipeline(held, "scene '" + sceneName + "' loaded but no sceneLoaded callback matched");
+            yield break;
+        }
+
+        // The hook sets State to Dormant, or Invalid with FailDetail when the
+        // scene has no Level component.
+        if (held.State != HeldSceneState.Dormant)
+        {
+            FailPipeline(held, held.FailDetail ?? "scene capture failed");   // held.Scene is set → really unloads
             yield break;
         }
 
         if (_dropRequested || (matchDriven && !PreloadStillWanted()))
         {
             // Round already started (gate timeout / force start) or the hold was
-            // dropped — discard instead of dormify. Level.Awake already ran, so
-            // undo its Game.currentLevel registration.
-            DiscardLoadedScene(held, _pendingLoadedScene, _dropRequested ? "dropped during scene load" : "round started during scene load");
-            yield break;
-        }
-
-        DormifyScene(held, _pendingLoadedScene);
-        if (held.State != HeldSceneState.Dormant)
-        {
-            FailPipeline(held, held.FailDetail ?? "dormify failed");
+            // dropped — discard the dormant scene (unloads it; no report — the
+            // server cleared preload states when the round began / pick changed).
+            DiscardLoadedScene(held, _dropRequested ? "dropped during scene load" : "round started during scene load");
             yield break;
         }
 
         Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}");
         TwilightLog.Print($"[Preload] '{levelId}' held dormant (scene '{held.SceneName}', {held.Roots.Length} roots) — twi preload swap");
+        if (matchDriven)
+        {
+            Report("done");
+            _doneReported = true;
+        }
         PipelineExited();
     }
 
-    /// <summary>Capture the scene handle for the pipeline; unrelated loads re-run the gates.</summary>
+    /// <summary>Capture + dormify our additive load; unrelated loads re-run the gates.</summary>
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         if (_awaitingSceneName != null && mode == LoadSceneMode.Additive && scene.name == _awaitingSceneName)
         {
+            _awaitingSceneName = null;
             _pendingLoadedScene = scene;
             _gotPendingScene = true;
+            // Capture AND deactivate right here: this callback runs before the
+            // scene ever renders, so the menu never flashes the level. The
+            // pipeline makes the keep/discard decision once its op completes —
+            // either way held.Scene is set, so every abort path really unloads.
+            var held = _held;
+            if (held != null && held.State == HeldSceneState.LoadingScene && held.SceneName == scene.name)
+                CaptureAndDormScene(held, scene);
             return;
         }
 
@@ -446,15 +475,18 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     // ── Dormify / discard / release ──────────────────────────────────────────
 
     /// <summary>
-    /// Put a freshly loaded additive scene to sleep: remember the authored active
-    /// state of every root, deactivate them all (no rendering, no physics, no
-    /// audio — inactive objects have zero presence on Unity 2017.4), grab the
-    /// HumanAPI Level component, and undo the Game.currentLevel registration its
-    /// Awake performed (the swap-in re-registers via Game.LevelLoaded).
+    /// Capture a freshly loaded additive scene and put it to sleep: remember the
+    /// authored active state of every root, deactivate them all (no rendering,
+    /// no physics, no audio — inactive objects have zero presence on Unity
+    /// 2017.4), grab the HumanAPI Level component, and undo the Game.currentLevel
+    /// registration its Awake performed (the swap-in re-registers via
+    /// Game.LevelLoaded). Runs inside the sceneLoaded callback — before the
+    /// scene ever renders. Sets State to Dormant, or Invalid (+FailDetail) when
+    /// the scene has no Level component.
     /// </summary>
-    private void DormifyScene(HeldScene held, Scene scene)
+    private void CaptureAndDormScene(HeldScene held, Scene scene)
     {
-        held.Scene = scene;
+        held.Scene = scene;              // set FIRST — every abort path unloads through this
         held.SceneName = scene.name;
         held.Roots = scene.GetRootGameObjects();
         held.RootWasActive = new bool[held.Roots.Length];
@@ -481,22 +513,15 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         if (Game.currentLevel == held.Level) Game.currentLevel = null;
 
         held.State = HeldSceneState.Dormant;
-        if (held.MatchDriven)
-        {
-            Report("done");
-            _doneReported = true;
-        }
     }
 
     /// <summary>A loaded-but-unwanted scene: unload it and release the bundle.</summary>
-    private void DiscardLoadedScene(HeldScene held, Scene scene, string reason)
+    private void DiscardLoadedScene(HeldScene held, string reason)
     {
-        Plugin.Logger.LogInfo($"[Preload] discarding loaded scene '{scene.name}': {reason}");
-        if (Game.currentLevel != null && held.Level != null && Game.currentLevel == held.Level)
-            Game.currentLevel = null;
+        Plugin.Logger.LogInfo($"[Preload] discarding held scene '{held.SceneName}': {reason}");
         held.State = HeldSceneState.Invalid;
         held.FailDetail = reason;
-        ReleaseHeld(held);
+        ReleaseHeld(held);   // held.Scene was set at capture — this really unloads
         _held = null;
         PipelineExited();
     }
@@ -517,6 +542,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void PipelineExited()
     {
         _pipeline = null;
+        _dropRequested = false;   // the pipeline honoured any pending drop by exiting
         if (!_pendingStart) return;
         _pendingStart = false;
         MaybeStartPreload();   // e.g. a changed pick_announced arrived while the old hold was winding down
@@ -526,7 +552,10 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void ReleaseHeld(HeldScene held)
     {
         if (held.Scene.IsValid())
-            SceneManager.UnloadSceneAsync(held.Scene); // fire and forget
+        {
+            _lastUnloadOp = SceneManager.UnloadSceneAsync(held.Scene);
+            _lastUnloadName = held.SceneName;   // a same-name reload waits for this op first
+        }
         ReleaseBundleOnly(held);
     }
 
@@ -550,6 +579,10 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _dropRequested = true;
         if (_pipeline == null)
         {
+            // Direct release — no pipeline will observe the flag, so honour the
+            // drop IMMEDIATELY. Leaving _dropRequested set here deadlocked
+            // MaybeStartPreload's gate forever (round 2+: new pick_announced
+            // dropped the previous hold directly, and no preload ever ran again).
             var held = _held;
             _held = null;
             if (held != null)
@@ -558,6 +591,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 held.FailDetail = reason;
                 ReleaseHeld(held);
             }
+            _dropRequested = false;
         }
     }
 
