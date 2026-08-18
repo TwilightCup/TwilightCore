@@ -20,6 +20,10 @@ namespace TwilightCore;
 ///   twi sim complete [final_ms] — force-complete the project
 ///   twi sim forfeit [reason]    — force-forfeit (multi_exit | single_exit_0_valid)
 ///   twi sim status              — simulated-timer state
+///   twi preload hold &lt;levelId&gt;  — M1: additively hold a level's scene dormant (from the main menu)
+///   twi preload swap            — M1: swap the held scene in (the GO sequence, no match flow)
+///   twi preload drop            — discard the held scene
+///   twi preload status          — held-scene preloader state
 ///
 /// Connection never happens automatically — run <c>twi connect &lt;host&gt; [port]</c>
 /// after setting <c>Account.Username/Password</c> in the cfg. Progress (login → WS →
@@ -46,7 +50,11 @@ internal static class TwilightCommands
         "\tsim skip - skip current level/attempt (N/A)\r\n" +
         "\tsim complete [final_ms] - force-complete the project\r\n" +
         "\tsim forfeit [multi_exit|single_exit_0_valid] - force-forfeit\r\n" +
-        "\tsim status - simulated timer state";
+        "\tsim status - simulated timer state\r\n" +
+        "\tpreload hold <levelId> - M1: hold a level scene dormant (main menu only)\r\n" +
+        "\tpreload swap - M1: swap the held scene in (no match flow)\r\n" +
+        "\tpreload drop - discard the held scene\r\n" +
+        "\tpreload status - held-scene preloader state";
 
     public static void Init(TwilightClient client, MatchSession session, SimulatedTimer timer, MatchController match)
     {
@@ -93,6 +101,9 @@ internal static class TwilightCommands
                 return;
             case "sim":
                 HandleSim(parts);
+                return;
+            case "preload":
+                HandlePreload(parts);
                 return;
             default:
                 PrintHelp();
@@ -161,6 +172,40 @@ internal static class TwilightCommands
                 return;
             default:
                 TwilightLog.Print("twi sim <level_done|skip|complete|forfeit|status>");
+                return;
+        }
+    }
+
+    /// <summary>
+    /// M1 prototype commands for the held-scene preloader (激进预载held-scene
+    /// 方案调研.md §8 M1): manually exercise hold → swap → drop from the main
+    /// menu without a match flow, to verify the HumanAPI side-effect / flash-frame
+    /// / additive-semantics risks (调研 §7 1-3) before wiring M2 into real rounds.
+    /// </summary>
+    private static void HandlePreload(string[] parts)
+    {
+        var pre = Preload.ScenePreloadManager.Instance;
+        if (pre == null) { TwilightLog.Print("twi preload: preloader not initialised."); return; }
+        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status>"); return; }
+
+        switch (parts[1].ToLowerInvariant())
+        {
+            case "hold":
+                if (parts.Length < 3) TwilightLog.Print("twi preload hold <levelId>   (e.g. Aztec or a workshop id)");
+                else pre.DebugHold(parts[2]);
+                return;
+            case "swap":
+                pre.DebugSwap();
+                return;
+            case "drop":
+                pre.ForceDrop("twi preload drop");
+                TwilightLog.Print("twi preload: drop requested.");
+                return;
+            case "status":
+                TwilightLog.Print(pre.StatusString());
+                return;
+            default:
+                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status>");
                 return;
         }
     }

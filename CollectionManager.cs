@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using Multiplayer;
+using TwilightCore.Preload;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -607,6 +608,40 @@ public class CollectionManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Canonicalise a level id for lookups. The in-game console lowercases the
+    /// ENTIRE command line before dispatching it (Shell.cs:102), so a typed
+    /// "Aztec" reaches us as "aztec" — while built-in display names and
+    /// editor-pick scene names are matched case-sensitively everywhere.
+    /// This folds full-width characters (CJK IME artefacts) to ASCII and matches
+    /// built-in/editor-pick names case-insensitively, returning the canonical
+    /// spelling. Workshop ids and "lvl:" paths pass through trimmed only.
+    /// </summary>
+    internal static string CanonicalizeLevelId(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return raw;
+
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (char c in raw)
+        {
+            if (c >= 0xFF01 && c <= 0xFF5E) sb.Append((char)(c - 0xFEE0)); // ！-～ → !-~
+            else if (c == 0x3000) sb.Append(' ');                          // ideographic space
+            else sb.Append(c);
+        }
+        string id = sb.ToString().Trim();
+        if (id.Length == 0) return id;
+
+        if (_builtInDisplayNameToIndex.ContainsKey(id)) return id;
+        foreach (var kv in _builtInDisplayNameToIndex)
+            if (string.Equals(kv.Key, id, StringComparison.OrdinalIgnoreCase)) return kv.Key;
+
+        if (Game.instance != null && Game.instance.editorPickLevels != null)
+            foreach (var name in Game.instance.editorPickLevels)
+                if (string.Equals(name, id, StringComparison.OrdinalIgnoreCase)) return name;
+
+        return id; // workshop id / lvl: path / unknown — untouched
+    }
+
+    /// <summary>
     /// Look up WorkshopLevelMetadata for a level by its LevelId.
     /// Returns null for BuiltIn levels (use the dictionary instead).
     /// </summary>
@@ -762,6 +797,24 @@ public class CollectionManager : MonoBehaviour
         try { LevelStarted?.Invoke(levelId, CurrentLevelIndex); }
         catch (Exception ex) { Plugin.Logger.LogWarning($"[CollectionManager] LevelStarted handler threw: {ex}"); }
 
+        // Held-scene fast path: if the preloader holds a dormant scene for exactly
+        // this level, swap it in instead of launching through App (near-instant
+        // round start). TrySwapIn fires no events of its own — LevelStarted above
+        // remains the single "attempt starting" signal either way.
+        var preload = ScenePreloadManager.Instance;
+        if (preload != null && preload.TrySwapIn(levelId))
+            return;
+
+        LaunchLevelStandard(levelId);
+    }
+
+    /// <summary>
+    /// The standard launch path (App.LaunchSinglePlayer / LaunchCustomLevel) —
+    /// also the recovery hammer for a failed swap-in: a Single-mode load rebuilds
+    /// every piece of game state, recovering from any intermediate state.
+    /// </summary>
+    internal void LaunchLevelStandard(string levelId)
+    {
         if (App.instance == null)
         {
             Plugin.Logger.LogError("App.instance is null, cannot launch level.");
@@ -850,7 +903,8 @@ public class CollectionManager : MonoBehaviour
         { "Credits",       13 },
     };
 
-    private ulong FindBuiltInLevelIndex(string displayName)
+    // internal: the preload manager resolves the same indexes when staging a held scene.
+    internal static ulong FindBuiltInLevelIndex(string displayName)
     {
         if (_builtInDisplayNameToIndex.TryGetValue(displayName, out int idx))
             return (ulong)idx;
@@ -859,7 +913,7 @@ public class CollectionManager : MonoBehaviour
         return 0;
     }
 
-    private ulong FindEditorPickLevelIndex(string sceneName)
+    internal static ulong FindEditorPickLevelIndex(string sceneName)
     {
         if (Game.instance != null && Game.instance.editorPickLevels != null)
         {

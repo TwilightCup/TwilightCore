@@ -48,6 +48,13 @@ internal static class TwilightConfig
     public static ConfigEntry<float> SameLevelReloadMinDwell;
     /// <summary>Clamp fall speed in the main menu while connected to the match server (anti-fall).</summary>
     public static ConfigEntry<bool> EnableMenuFallLimit;
+    /// <summary>
+    /// Held-scene preload: after !ready, additively load the announced MULTI pick's
+    /// first level during PREP and swap it in at round_start (near-instant round start).
+    /// SINGLE picks are unaffected and report preload "na". Any preload failure falls
+    /// back to the standard load path.
+    /// </summary>
+    public static ConfigEntry<bool> EnableScenePreload;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -92,6 +99,9 @@ internal static class TwilightConfig
             "(clear visual gap between consecutive plays of one level). 0 = disable the detour.");
         EnableMenuFallLimit = config.Bind("Features", "EnableMenuFallLimit", true,
             "While connected to the match server, clamp the main-menu ragdoll's fall speed (anti-fall).");
+        EnableScenePreload = config.Bind("Features", "EnableScenePreload", true,
+            "Held-scene preload of the announced MULTI pick's first level during PREP (additive, dormant); " +
+            "round_start swaps it in instead of loading. Requires server-side pick_announced; SINGLE picks never preload.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

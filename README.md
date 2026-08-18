@@ -37,6 +37,9 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | 断线指数退避（重连沿用上次 `twi connect` 的地址） |
 | `Features.EnableReadyLock` | `true` | 准备阶段 `!ready` 之后、以及倒计时阶段锁定手动进关（未 ready 前可自由练习） |
 | `Features.EnableSimTimer` | `true` | 启用模拟计时器上报 |
+| `Features.SameLevelReloadMinDwell` | `1` | 合集连续进同一关时绕道 `Empty` 场景的最短停留秒数（视觉上区分两次尝试）；`0` 关闭绕道 |
+| `Features.EnableMenuFallLimit` | `true` | 连接比赛服期间限制主菜单小人下落速度（防坠落） |
+| `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -72,6 +75,10 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi sim complete [final_ms]` | 模拟整回合完成 |
 | `twi sim forfeit [multi_exit\|single_exit_0_valid]` | 模拟弃权 |
 | `twi sim status` | 模拟计时器状态 |
+| `twi preload hold <levelId>` | **M1 验证**：主菜单下把指定关卡以 additive+休眠方式驻留（不经比赛流程）。id 同合集配置：内置关用显示名（`Aztec`、`Steam`…，区分大小写）或已订阅的 workshop id |
+| `twi preload swap` | **M1 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
+| `twi preload drop` | 丢弃驻留场景并卸载 |
+| `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
@@ -102,6 +109,27 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 }
 ```
 
+## 关卡预载（held-scene，仅 MULTI）
+
+`Features.EnableScenePreload` 开启时，插件会在 PREP 阶段把裁判选定图（**仅 MULTI**）的
+**首关场景**提前加载进内存（additive、全部根物体休眠：不渲染/无物理/无音频），
+`round_start` 瞬间只做轻量"换入"（激活场景 + 复刻游戏自己的
+`AfterLoad` 编排），实现**倒计时结束即在关卡里**。工作方式：
+
+- **触发**：收到服务端 `pick_announced`（裁判选图即提前下发合集）+ 本方 `!ready`，
+  且玩家在主菜单。ready-lock 生效后手动进关被锁，预载不会被意外破坏。
+- **上报**：预载状态机向服务端报 `preload_report`（`in_progress`/`done`/`failed`/`na`）；
+  SINGLE 选图固定报 `na`。服务端据此做开局门控（双方预载完成才自动倒计时）。
+- **降级**：预载是优化不是依赖——任何失败（未订阅、下载失败、场景异常、改图）
+  自动回退现有标准加载路径，行为与未开预载完全一致；服务端不支持
+  `pick_announced` 时插件完全闲置（WS 连接会带 `cap=preload1` 能力参数，旧服务端忽略）。
+- **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
+- 调试：`twi preload hold/swap/drop/status` 可在不连服务端的情况下手工验证
+  驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用）。
+
+> 完整设计见 `ignored/激进预载held-scene方案调研.md`；服务端侧（`pick_announced`
+> 提前下发 + 预载门控）见 `ignored/需求-合集提前下发与预载门控.md`（后端实现后生效）。
+
 ## 端到端联调（服务端已存在）
 
 1. 起后端：`cd TwilightCupBackend && uv run uvicorn twilightcupbackend.main:app --reload`（需本地 MongoDB）。
@@ -114,6 +142,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 ## 已知限制 / 待办
 
 - **真实计时器**：未实现（本期用 `SimulatedTimer` 占位）。
+- **预载端到端**：held-scene 预载依赖服务端 `pick_announced`/门控（后端 R1/R2）；
+  后端上线前仅可用 `twi preload …` 手工验证，正式比赛回合不受影响（自动走标准加载）。
 - **重连重载合集**：回合中断线重连只补传双方状态快照，不会重新下发/加载合集配置
   （服务端 `reconnect_resync` 不含 pick/collection）；游戏崩溃后需手动重进。
   同一进程内的临时断连不会停止计时器，断线期间产生的上报会缓存并在重连后补发

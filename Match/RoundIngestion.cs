@@ -76,8 +76,10 @@ internal static class RoundIngestion
     /// <summary>
     /// Find the levels array, trying (in order): collection.raw.levels,
     /// collection.levels, collection.raw (if it's itself an array of strings).
+    /// Internal: the preload manager resolves the first level of an announced
+    /// pick through the same tolerant path.
     /// </summary>
-    private static List<object> ResolveLevels(Dictionary<string, object> collection)
+    internal static List<object> ResolveLevels(Dictionary<string, object> collection)
     {
         if (collection == null) return null;
 
