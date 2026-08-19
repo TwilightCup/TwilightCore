@@ -94,12 +94,19 @@ internal sealed class HeldScene
     // every renderer's remapped indices and the scene goes black).
     public LightProbes PreLoadProbes;
     public RenderSettingsSnapshot PreLoadRS;
-    public RenderSettingsSnapshot SceneRS;   // the held scene's values (RS probe, see pipeline)
     public LightmapsMode PreLoadLMMode;
-    public LightmapsMode SceneLMMode;
     public int PreLoadLMCount;      // diagnostics: table size before the load
 
-    // ── Probe-coefficient freeze (tinting fix; 调查 §1.2) ──────────────────
+    /// <summary>
+    /// Diagnostics: color-texture instance IDs of the table before the load
+    /// (<see cref="LightingDiagnostics.TableIds"/>). Compared against the
+    /// post-load table (freeze log line), surviving IDs = engine dedup/shared
+    /// entries, all-new IDs = engine replaced the table — the discriminator the
+    /// bare lmCount count cannot provide.
+    /// </summary>
+    public int[] PreLoadTableIds;
+
+    // ── Probe-coefficient freeze (tinting fix) ─────────────────────────────
     // The additive load switches the engine's light-probe SAMPLING structure
     // to the held scene's set — dynamic objects then sample the NEXT level's
     // ambient (including its baked light-source contributions) until the
@@ -109,7 +116,9 @@ internal sealed class HeldScene
     // coefficient with the interpolated probe sampled at the player's
     // position BEFORE the load — a uniform field, identical at every
     // position, zero tint. The held scene's real coefficients are saved here
-    // and written back at the swap.
+    // and written back at the swap. BAKED scenes only (Halloween/Steam — the
+    // getter exposes their coefficients); unbaked scenes are left alone
+    // (managed writes mis-scale in their renderer fallback path).
     public SphericalHarmonicsL2 FrozenSh;
     public bool HasFrozenSh;                    // set when FrozenSh sampled cleanly
     public SphericalHarmonicsL2[] RealBakedProbes;   // the held scene's own coefficients (null: no probes / save failed)

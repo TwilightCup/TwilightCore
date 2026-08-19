@@ -469,12 +469,12 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         // ── capture the global lighting state BEFORE the load ──
         // The additive load switches lightProbes / lightmapsMode to the new
-        // scene's (and the RS probe below needs the pre-load baseline). The
-        // lightmap TABLE itself is engine-managed — never touched.
+        // scene's. The lightmap TABLE itself is engine-managed — never touched.
         held.PreLoadProbes = LightmapSettings.lightProbes;
         held.PreLoadRS = HeldScene.RenderSettingsSnapshot.Capture();
         held.PreLoadLMMode = LightmapSettings.lightmapsMode;
         held.PreLoadLMCount = LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0;
+        held.PreLoadTableIds = LightingDiagnostics.TableIds();   // dedup-vs-replace discriminator (see LightingDiagnostics)
 
         // ── sample the freeze value BEFORE the load (tinting fix) ──
         // After the load the probe SAMPLING structure belongs to the held
@@ -482,7 +482,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // sampled NOW. GetInterpolatedProbe at the local player's position
         // (menu: the camera's) is what dynamic objects should keep sampling
         // through the hold window — frozen into a uniform field below.
-        if (TwilightConfig.EnableProbeFreeze.Value)
+        if (TwilightConfig.EnableProbeFreeze != null && TwilightConfig.EnableProbeFreeze.Value)
         {
             try
             {
@@ -513,6 +513,15 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _awaitingSceneName = sceneName;
         _gotPendingScene = false;
         _pendingLoadedScene = default(Scene);
+
+        // Pre-load state, logged BEFORE the load: the unresolved native crash
+        // dies INSIDE LoadSceneAsync's integration — the freeze line
+        // (post-load) never runs, so this line is the last surviving evidence
+        // of what the engine was handed: if the outgoing swap's unload failed
+        // to remove its lightmap entries, the stale/freed IDs show up HERE
+        // (the integration then walks them).
+        Plugin.Logger.LogInfo(
+            $"[Preload] load start: '{sceneName}' — pre-load table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
 
         AsyncOperation op = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Additive);
         if (op == null)
@@ -570,7 +579,20 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         LightmapSettings.lightmapsMode = held.PreLoadLMMode;   // decode mode back to the playing scene's
         held.PreLoadRS.Apply();
-        held.SceneRS = held.PreLoadRS;   // degraded default — the probe overwrites on success
+
+        // NOTE: the lightProbes POINTER is deliberately not assigned. Manual
+        // assignment of LightmapSettings.lightProbes breaks dynamic-object
+        // sampling (the "player goes dark" regression) — the switch is
+        // engine-owned and stays that way.
+        // The table-ids pair is the append/dedup/replace discriminator for the
+        // lightmapped-coexistence crash investigation (LightingDiagnostics):
+        // ids that survive the load = shared/deduped entries; an all-new id set
+        // = the engine replaced the table.
+        var tableIdsAfter = LightingDiagnostics.TableIds();
+        Plugin.Logger.LogInfo(
+            $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, table {LightingDiagnostics.FormatTableIds(held.PreLoadTableIds)} -> {LightingDiagnostics.FormatTableIds(tableIdsAfter)}, " +
+            $"mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
+            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — engine-owned)")}");
 
         // ── probe-coefficient freeze (tinting fix) ──
         // The engine switched the active probe set to the held scene's at
@@ -581,7 +603,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // (every other built-in: count in the thousands but no baked SH) are
         // deliberately LEFT ALONE: their renderer lighting flows through a
         // native fallback whose value convention differs from every managed
-        // readback (real-machine v7 evidence: ambientProbe ≈ amb×1.2,
+        // readback (real-machine evidence: ambientProbe ≈ amb×1.2,
         // GetInterpolatedProbe ≈ amb×1.65, renderer path yet another scale —
         // writing any of them into the coefficients overbrightens dynamic
         // objects and CASCADES brighter level over level). Their hold-window
@@ -618,36 +640,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             Plugin.Logger.LogWarning($"[Preload] probe freeze failed: {e.Message} — hold-window tinting will remain.");
         }
 
-        // NOTE: the lightProbes POINTER is deliberately not assigned. Manual
-        // assignment of LightmapSettings.lightProbes breaks dynamic-object
-        // sampling (the "player goes dark" regression) — the switch is
-        // engine-owned and stays that way.
-        Plugin.Logger.LogInfo(
-            $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
-            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — coefficients frozen)")}");
-
-        // ── RS probe: learn the held scene's OWN RenderSettings ──
-        // The engine never applies them for an additive load — but activation
-        // does, eventually (sync, or by the next frame's integration point).
-        // Briefly activate the held scene (roots stay dormant, nothing renders
-        // from it), capture what the engine applies, then restore. The swap-in
-        // re-applies the captured values so Level.OnEnable adopts the scene's
-        // OWN fog instead of the outgoing level's leftovers.
-        //
-        // CaveRender is SUPPRESSED for the probe frames: it rewrites the
-        // global fog from the playing level every OnPreCull, so an unsuppressed
-        // post-frame capture would store the PLAYING level's fog as the held
-        // scene's — and if the player happens to be underwater at that moment
-        // (the hold can start/retry at any time during play), the swap would
-        // permanently latch UNDERWATER fog into the next level (调查 §3.2
-        // 锁存 B).
-        yield return StartCoroutine(RsProbe(held));
-
         // What dynamic objects sample DURING the hold (diagnostics): compared
         // against the pre-load freeze sample, any difference is the residual
-        // tinting channel. Early built-in scenes report bakedProbes.Length==0
-        // yet carry per-level sampled data (their freeze samples differ per
-        // level) — the managed coefficient array just can't read/write them.
+        // tinting channel.
         try
         {
             SphericalHarmonicsL2 post;
@@ -666,16 +661,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             Plugin.Logger.LogWarning($"[Preload] hold sampling dump failed: {e.Message}");
         }
 
-        // Final drop/wanted check — the freeze+probe crossed frames, during
-        // which a drop may have arrived (pick change / phase left PREP / the
-        // chained next level moved).
-        if (_dropRequested || !HoldStillWanted(held))
-        {
-            DiscardLoadedScene(held, _dropRequested ? "dropped during lighting freeze/probe" : "hold no longer wanted after probe");
-            yield break;
-        }
-
-        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}; probedRS={held.SceneRS.Describe()}");
+        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}");
         TwilightLog.Print($"[Preload] '{levelId}' held dormant (scene '{held.SceneName}', {held.Roots.Length} roots) — twi preload swap");
         if (matchDriven)
         {
@@ -683,75 +669,6 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             _doneReported = true;
         }
         PipelineExited();
-    }
-
-    /// <summary>
-    /// One-frame RS probe of the held scene (see the pipeline). Runs as a
-    /// coroutine so it can cross exactly one frame; restores the previous
-    /// active scene, lightmapsMode and RenderSettings before returning. Never
-    /// throws — a failed probe leaves <c>held.SceneRS</c> at its degraded
-    /// default (the pre-load values) and logs a warning.
-    /// </summary>
-    private IEnumerator RsProbe(HeldScene held)
-    {
-        var probePrevActive = SceneManager.GetActiveScene();
-
-        // Suppress every CaveRender for the probe window (one frame): the
-        // camera just keeps the previous frame — invisible — but nothing
-        // overwrites the fog the engine applies for the activated held scene.
-        var caveRenders = UnityEngine.Object.FindObjectsOfType<CaveRender>();
-        var caveWasEnabled = new bool[caveRenders.Length];
-        for (int i = 0; i < caveRenders.Length; i++)
-        {
-            caveWasEnabled[i] = caveRenders[i].enabled;
-            if (caveWasEnabled[i]) caveRenders[i].enabled = false;
-        }
-
-        var preRS = held.PreLoadRS;
-        var syncRS = preRS;
-        bool activated = false;
-        try
-        {
-            preRS = HeldScene.RenderSettingsSnapshot.Capture();
-            SceneManager.SetActiveScene(held.Scene);
-            activated = true;
-            syncRS = HeldScene.RenderSettingsSnapshot.Capture();   // applied synchronously?
-        }
-        catch (Exception e)
-        {
-            Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' failed (activation): {e.Message} — using pre-load values.");
-        }
-        yield return null;   // one frame for the engine's integration to apply the scene's stored RS
-        try
-        {
-            if (activated)
-            {
-                var postRS = HeldScene.RenderSettingsSnapshot.Capture();   // applied by this frame's integration?
-                held.SceneRS = syncRS.Equals(preRS) ? postRS : syncRS;      // whichever one the engine actually applied
-                held.SceneLMMode = LightmapSettings.lightmapsMode;
-                Plugin.Logger.LogInfo(
-                    $"[Preload] RS probe '{held.SceneName}': {(syncRS.Equals(preRS) ? "post-frame" : "sync")} applied, rs={held.SceneRS.Describe()}; probesAcrossActivation={(Equals(LightmapSettings.lightProbes, held.PreLoadProbes) ? "unchanged" : "SWITCHED (left engine-owned)")}");
-            }
-        }
-        catch (Exception e)
-        {
-            Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' failed (capture): {e.Message} — using pre-load values.");
-        }
-        finally
-        {
-            try
-            {
-                SceneManager.SetActiveScene(probePrevActive);
-                LightmapSettings.lightmapsMode = held.PreLoadLMMode;
-                held.PreLoadRS.Apply();
-            }
-            catch (Exception e)
-            {
-                Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' restore failed: {e.Message}");
-            }
-            for (int i = 0; i < caveRenders.Length; i++)
-                if (caveWasEnabled[i] && caveRenders[i] != null) caveRenders[i].enabled = true;
-        }
     }
 
     /// <summary>Capture + dormify our additive load; unrelated loads re-run the gates.</summary>
@@ -952,24 +869,20 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         yield return SwapInSequence.Run(held, OnSwapInFallback, OnOutgoingUnload);
 
         // OOM fix: the additive preload path leaks native memory per DISTINCT
-        // scene — after the swap unloads the outgoing scene, its assets stay
-        // unreferenced but are never collected (nothing on this path runs the
-        // engine's asset GC), and after ~11 distinct levels a later additive
-        // scene integration dies inside UnityPlayer.dll ('out of memory', hard
-        // native crash — no managed exception, no usable stack under Wine).
-        // Same-scene repeats never accumulate and the standard Single-load
-        // path doesn't leak (vanilla campaigns finish), so the sweep here is
-        // the missing collection step: the outgoing scene is fully gone,
-        // whatever it kept alive is unreferenced, and UnloadUnusedAssets
-        // collects it (~50-145ms per swap). Verified: the previously-crashing
-        // full Any% order completes all 13 levels with this enabled.
+        // scene until the process dies inside a later scene integration
+        // ('out of memory'; repeats of the same scenes never accumulate — a
+        // 4-scene ×3 cycle is safe). The game itself never sweeps around level
+        // loads, and the standard path doesn't leak (vanilla campaigns finish).
+        // Sweep here: the outgoing scene is fully unloaded, so whatever it kept
+        // alive is unreferenced, and UnloadUnusedAssets collects it.
+        // Config-gated so the effect is A/B-able.
         if (TwilightConfig.PreloadUnloadUnusedAfterSwap != null && TwilightConfig.PreloadUnloadUnusedAfterSwap.Value)
         {
             float tSweep = Time.realtimeSinceStartup;
-            AsyncOperation sweep = Resources.UnloadUnusedAssets();
+            var sweep = Resources.UnloadUnusedAssets();
             while (sweep != null && !sweep.isDone) yield return null;
             Plugin.Logger.LogInfo(
-                $"[Preload] unload-unused sweep after '{held.SceneName}': {(Time.realtimeSinceStartup - tSweep) * 1000f:0} ms; mono={(GC.GetTotalMemory(false) >> 20)}MB");
+                $"[Preload] unload-unused sweep after '{held.SceneName}': {(Time.realtimeSinceStartup - tSweep) * 1000f:0} ms; {LightingDiagnostics.MemorySignature()}");
         }
         _swapRunning = false;
     }
@@ -1098,9 +1011,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
     /// <summary>
     /// Dump the live global lighting state for real-machine diagnosis
-    /// (`twi preload rs`) — probe-set id, ambient, fog, lightmap table. Copy
-    /// into bug reports alongside the pipeline's lighting-freeze / RS-probe
-    /// log lines.
+    /// (`twi preload rs`) — probe-set id, ambient, fog, lightmap table, plus
+    /// (<see cref="LightingDiagnostics.Dump"/>) per-entry table texture
+    /// identity, per-scene renderer lightmapIndex histograms and the MeshBaker
+    /// LOD layer state. Copy into bug reports alongside the pipeline's
+    /// lighting-freeze log lines.
     /// </summary>
     public string RenderStateString()
     {
@@ -1144,9 +1059,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         sb.Append($"\nfog: {RenderSettings.fog}/{RenderSettings.fogColor}/d={RenderSettings.fogDensity:0.####}/{RenderSettings.fogMode} (multiplier={CaveRender.fogDensityMultiplier:0.##})");
         sb.Append($"\nsun={(RenderSettings.sun != null ? RenderSettings.sun.name : "none")} skybox={(RenderSettings.skybox != null ? RenderSettings.skybox.name : "none")}");
         sb.Append($"\ncurrentLevel={(Game.currentLevel != null ? Game.currentLevel.name + " fog=" + Game.currentLevel.fogColor + "/d=" + Game.currentLevel.fogDensity : "null")}");
-        var held = _held;
-        if (held != null && held.Scene.IsValid())
-            sb.Append($"\nheld[{held.State}]: probedRS={held.SceneRS.Describe()}");
+        sb.Append("\n").Append(LightingDiagnostics.Dump());
         return sb.ToString();
     }
 

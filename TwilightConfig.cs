@@ -80,7 +80,6 @@ internal static class TwilightConfig
     /// the residue. Adds a short hitch per swap — toggle off to A/B.
     /// </summary>
     public static ConfigEntry<bool> PreloadUnloadUnusedAfterSwap;
-
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
     public static ConfigEntry<bool> HudEnabled;
@@ -151,11 +150,6 @@ internal static class TwilightConfig
         HudFontSize = config.Bind("HUD", "FontSize", 18, "HUD font size.");
 
         VerboseNetLog = config.Bind("Debug", "VerboseNetLog", false, "Log every sent/received WebSocket frame.");
-
-        // Persist immediately so the cfg file appears on disk on first launch
-        // (BepInEx otherwise only writes it on shutdown) — lets the user edit it
-        // without having to quit first.
-        try { config.Save(); } catch (System.Exception ex) { Plugin.Logger.LogWarning("[TwilightConfig] failed to save cfg: " + ex.Message); }
     }
 
     /// <summary>

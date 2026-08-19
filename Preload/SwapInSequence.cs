@@ -236,18 +236,25 @@ internal static class SwapInSequence
             Plugin.Logger.LogInfo($"[Preload] swap timing: unload '{prevActiveName}' {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms (pre-activation)");
         }
 
-        // ── the "load": one atomic frame — activate, apply, re-enable, register ──
+        // ── the "load": one atomic frame — activate, re-enable, register ──
         tStep = Time.realtimeSinceStartup;
+        HeldScene.RenderSettingsSnapshot appliedRS = default(HeldScene.RenderSettingsSnapshot);   // diagnostics: what the engine applied at activation
         err = TryStep("scene activate", () =>
         {
-            // ORDER MATTERS (fog claim). Apply the held scene's probed
-            // RenderSettings FIRST, then re-enable the root objects — OnEnable
-            // adopts the applied own-scene values. No yield inside this block:
-            // CaveRender drives the global fog from Game.currentLevel every
-            // frame and must not interleave between Apply and the adoption.
+            // ORDER MATTERS (fog claim). Activate the held scene FIRST —
+            // SetActiveScene applies the scene's stored RenderSettings
+            // synchronously (established by instrumented probes on the real
+            // machine: every activation applied the scene's own skybox/
+            // ambient/fog sync) — then re-enable the root objects, whose
+            // Level.OnEnable ADOPTS those live values. No yield inside this
+            // block: CaveRender drives the global fog from Game.currentLevel
+            // every frame and must not interleave. The lightmap system is left
+            // entirely engine-owned (no lightmapsMode write: two lightmapped
+            // scenes coexist during a hold and the engine dedups table entries
+            // — a mode write on the merged table is our prime suspect for the
+            // native crash at Ice_merged's load).
             SceneManager.SetActiveScene(held.Scene);
-            held.SceneRS.Apply();
-            LightmapSettings.lightmapsMode = held.SceneLMMode;
+            appliedRS = HeldScene.RenderSettingsSnapshot.Capture();
             // Probe write-back (tinting fix): BAKED scenes only — the hold
             // froze their coefficients into a uniform field; restore the real
             // values now, same sync frame, before render. Unbaked scenes were
@@ -274,7 +281,7 @@ internal static class SwapInSequence
         });
         if (err != null) { onFallback(held, err); yield break; }
         Plugin.Logger.LogInfo(
-            $"[Preload] swap timing: activate+RS {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms; lmMode={held.SceneLMMode}; rs={held.SceneRS.Describe()}");
+            $"[Preload] swap timing: activate {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms; engine-applied rs={appliedRS.Describe()}");
 
         // ── runtime-joint rebuild (THE machine fix) ──
         // The HumanAPI joint system (AngularJoint & co.) creates its
@@ -285,8 +292,7 @@ internal static class SwapInSequence
         // the whole scene deactivates (dormancy) and reactivates at the swap:
         // PhysX re-creates every constraint at reactivation, and for these
         // runtime-created joints the recreated limits/drives end up operating
-        // in a wrong reference frame. Real-machine evidence
-        // (ignored/M3遗留问题调查-反编译实证.md §4.6): dumpster lid sags 84°
+        // in a wrong reference frame. Real-machine evidence: dumpster lid sags 84°
         // PAST its angular limit (-92 vs min -7.5), Power's latch 11° past
         // (min 0), the catapult arm pins at its min limit while its drive
         // targets -7.3 — while scene-AUTHORED HingeJoints (doors, capsules)
@@ -402,6 +408,6 @@ internal static class SwapInSequence
         if (err != null) { onFallback(held, err); yield break; }
 
         Plugin.Logger.LogInfo(
-            $"[Preload] swap-in complete: '{held.LevelId}' (scene '{held.SceneName}') in {(Time.realtimeSinceStartup - t0) * 1000f:0} ms total.");
+            $"[Preload] swap-in complete: '{held.LevelId}' (scene '{held.SceneName}') in {(Time.realtimeSinceStartup - t0) * 1000f:0} ms total; post-swap table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
     }
 }

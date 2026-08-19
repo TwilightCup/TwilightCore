@@ -42,6 +42,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
 | `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
 | `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
+| `Features.PreloadUnloadUnusedAfterSwap` | `true` | **换入后清扫**：每次换入完成、旧场景卸载后执行 `Resources.UnloadUnusedAssets()` 并等待（约 50-145ms）。additive 预载路径会按不同场景累积泄漏 native 资产，长合集（约 12 个不同场景起）最终在场景加载时 OOM 硬崩；清扫即修复（代价是每次换入多一次短卡顿），关闭可做 A/B 对比 |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -81,7 +82,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi preload swap` | **M1/M3 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
 | `twi preload drop` | 丢弃驻留场景并卸载 |
 | `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
-| `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表），排查换入光照问题用 |
+| `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表逐条纹理标识/逐场景 renderer lightmapIndex 直方图/LOD 层状态/进程内存），排查换入光照与内存问题用 |
+| `twi preload mach` | 转储当前关全部机器的关节/物理状态（AngularJoint/Lever/Catapult/铰链角度与驱动目标等），机器异常时当场运行 |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
@@ -131,8 +133,13 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
   关间过渡从数秒加载变为帧级切换，计时器边沿/上报不受影响。相邻同关
   （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
   预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
-  预载完成到换关前的探针染色由 `Features.EnableProbeFreeze` 处理（见配置表）；
-  完整问题清单与修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
+  保持期染色：烘焙探针的关（如 Halloween/Steam）由 `Features.EnableProbeFreeze`
+  修复（保持期内探针系数冻结为玩家处采样值，换入时写回）；其余未烘焙关维持
+  轻微的下一关染色，换关即恢复（已接受的取舍）。换入完成后自动执行
+  `Resources.UnloadUnusedAssets()` 清扫无引用资产（`Features.
+  PreloadUnloadUnusedAfterSwap`）——additive 预载路径会按不同场景累积泄漏
+  native 资产，长合集最终 OOM 硬崩（已定案），清扫即修复。完整问题清单与
+  修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
 - **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
 - 调试：`twi preload hold/swap/drop/status/rs` 可在不连服务端的情况下手工验证
   驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap

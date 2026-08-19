@@ -5,9 +5,9 @@ using UnityEngine;
 namespace TwilightCore.Preload;
 
 /// <summary>
-/// Machine-state diagnostics for the swap-in machine investigation
-/// (ignored/M3遗留问题调查-反编译实证.md §4): dumps the live joint/physics
-/// state of every anchor-rotating machine component in the current level —
+/// Machine-state diagnostics for the swap-in machine investigation: dumps the
+/// live joint/physics state of every anchor-rotating machine component in the
+/// current level —
 /// AngularJoint (HumanAPI runtime joints), Lever, Catapult, authored
 /// HingeJoint/ConfigurableJoint, plus rigidbody sleep/velocity — so a broken
 /// machine can be inspected at the moment it is observed broken
