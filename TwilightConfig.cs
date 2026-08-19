@@ -74,6 +74,19 @@ internal static class TwilightConfig
     /// </summary>
     public static ConfigEntry<bool> EnableProbeFreeze;
     /// <summary>
+    /// Experimental: extend the probe-coefficient freeze to UNBAKED held scenes
+    /// (every level except Halloween/Steam — their probe sets carry no readable
+    /// coefficients, so during the hold window dynamic objects sample zeros:
+    /// the "everything loses ambient and goes dark" artifact, including the
+    /// player model). The uniform value is sampled from the PLAYING scene's
+    /// structure before the load (same source as the baked-scene freeze); the
+    /// swap writes nothing back — scene activation re-applies the held scene's
+    /// own values. The renderer's fallback path may scale the written uniform
+    /// slightly differently (possible mild over/under-brightness — one-shot,
+    /// non-cascading). Off = hold windows of unbaked levels stay dark.
+    /// </summary>
+    public static ConfigEntry<bool> ProbeFreezeUnbakedHolds;
+    /// <summary>
     /// After each swap-in, run Resources.UnloadUnusedAssets() (and wait it out).
     /// The additive preload path leaks native memory per DISTINCT scene until
     /// the process dies at a later scene integration (OOM); the sweep collects
@@ -134,6 +147,12 @@ internal static class TwilightConfig
             "Tinting fix: freeze the active light-probe coefficients to a uniform field (sampled at the player " +
             "before the preload load) for the hold window; the swap writes the held scene's real coefficients back. " +
             "Off = dynamic objects are tinted by the next level's probes during the hold (cosmetic, resolves at swap).");
+        ProbeFreezeUnbakedHolds = config.Bind("Features", "ProbeFreezeUnbakedHolds", true,
+            "Experimental: also freeze UNBAKED held scenes (all levels except Halloween/Steam). Without it their " +
+            "hold windows leave dynamic objects sampling zero coefficients — everything with light probes goes " +
+            "dark, player model included. The uniform value comes from the playing scene's structure (pre-load " +
+            "sample); the swap writes nothing back (scene activation re-applies the held scene's own values). " +
+            "Slight brightness offset possible; off = hold windows of unbaked levels stay dark.");
         PreloadUnloadUnusedAfterSwap = config.Bind("Features", "PreloadUnloadUnusedAfterSwap", true,
             "After each swap-in, run Resources.UnloadUnusedAssets() and wait it out. The additive preload path " +
             "leaks memory per distinct scene until OOM; the sweep collects the residue. " +

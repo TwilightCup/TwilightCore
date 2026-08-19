@@ -116,13 +116,16 @@ internal sealed class HeldScene
     // coefficient with the interpolated probe sampled at the player's
     // position BEFORE the load — a uniform field, identical at every
     // position, zero tint. The held scene's real coefficients are saved here
-    // and written back at the swap. BAKED scenes only (Halloween/Steam — the
-    // getter exposes their coefficients); unbaked scenes are left alone
-    // (managed writes mis-scale in their renderer fallback path).
+    // and written back at the swap. BAKED scenes (Halloween/Steam — the getter
+    // exposes their coefficients) get the full freeze+write-back; UNBAKED
+    // scenes get a uniform-only freeze with no swap write-back (scene
+    // activation re-applies their own values) — see the pipeline's freeze
+    // block for the scaling evidence behind that split.
     public SphericalHarmonicsL2 FrozenSh;
     public bool HasFrozenSh;                    // set when FrozenSh sampled cleanly
     public SphericalHarmonicsL2[] RealBakedProbes;   // the held scene's own coefficients (null: no probes / save failed)
     public bool ProbeFreezeApplied;             // the uniform write verifiably took effect (swap must undo it)
+    public bool UnbakedFreezeApplied;           // experimental: uniform frozen into an UNBAKED set (no swap write-back — activation re-applies)
 
     /// <summary>Captured/applied bundle of the global RenderSettings.</summary>
     internal struct RenderSettingsSnapshot

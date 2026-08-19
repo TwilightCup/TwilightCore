@@ -600,15 +600,19 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // sampling), but for BAKED scenes (Halloween/Steam — the getter
         // exposes their coefficients) the coefficients can be frozen into a
         // uniform field and restored exactly at the swap. UNBAKED scenes
-        // (every other built-in: count in the thousands but no baked SH) are
-        // deliberately LEFT ALONE: their renderer lighting flows through a
-        // native fallback whose value convention differs from every managed
-        // readback (real-machine evidence: ambientProbe ≈ amb×1.2,
-        // GetInterpolatedProbe ≈ amb×1.65, renderer path yet another scale —
-        // writing any of them into the coefficients overbrightens dynamic
-        // objects and CASCADES brighter level over level). Their hold-window
-        // tint stays an accepted cosmetic (next-level colour, resolves at
-        // the swap); only a native/icall-level approach could suppress it.
+        // (every other built-in: count in the thousands but no baked SH) were
+        // long left alone: their renderer lighting flows through a native
+        // fallback whose value convention differs from every managed readback
+        // (real-machine evidence: ambientProbe ≈ amb×1.2, GetInterpolatedProbe
+        // ≈ amb×1.65, renderer path yet another scale — DERIVING values and
+        // re-writing them at the swap overbrightens dynamic objects and
+        // CASCADES brighter level over level). The hold-window BLACKNESS
+        // variant (player inside the held scene's probe hull → every
+        // probe-using renderer samples zeros → objects lose ambient entirely)
+        // is now frozen the same way behind Features.ProbeFreezeUnbakedHolds,
+        // with the crucial difference that the swap NEVER writes back or
+        // re-derives anything — scene activation re-applies the held scene's
+        // own values, which is what keeps the cascade away.
         try
         {
             var lp = LightmapSettings.lightProbes;
@@ -626,6 +630,41 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                     && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
                 Plugin.Logger.LogInfo(
                     $"[Preload] probe freeze: count={lp.count} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
+            }
+            else if (held.RealBakedProbes == null && lp != null && held.HasFrozenSh
+                && TwilightConfig.ProbeFreezeUnbakedHolds != null && TwilightConfig.ProbeFreezeUnbakedHolds.Value)
+            {
+                // Unbaked held scene (every level except Halloween/Steam): the
+                // additive load switched the structure to a set of positions
+                // with ZERO coefficients, and with the player inside its hull
+                // every probe-using renderer samples zeros — dynamic objects
+                // lose ambient entirely and go black (player model included).
+                // Freeze the same way as baked scenes, with the value sampled
+                // from the PLAYING scene's structure before the load. The swap
+                // deliberately writes NOTHING back: scene activation re-applies
+                // the held scene's own values (observed: own-play sampling on a
+                // zero-coefficient set is non-zero), and re-deriving values at
+                // the swap is what made the old v7 attempt overbrighten and
+                // cascade. The renderer's fallback path may scale the uniform
+                // slightly differently — watch for a mild brightness offset.
+                try
+                {
+                    var uniform = new SphericalHarmonicsL2[lp.count];
+                    for (int i = 0; i < uniform.Length; i++) uniform[i] = held.FrozenSh;
+                    lp.bakedProbes = uniform;
+                    var back = lp.bakedProbes;
+                    held.UnbakedFreezeApplied = back != null && back.Length == lp.count
+                        && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
+                        && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
+                        && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
+                    Plugin.Logger.LogInfo(
+                        $"[Preload] probe freeze (unbaked, experimental): count={lp.count} uniform-written={(held.UnbakedFreezeApplied ? "verified" : "UNVERIFIED")} — hold-window blackness should be gone; activation re-applies real values at the swap (no write-back).");
+                }
+                catch (Exception e)
+                {
+                    held.UnbakedFreezeApplied = false;
+                    Plugin.Logger.LogWarning($"[Preload] unbaked probe freeze failed: {e.Message} — hold-window blackness will remain.");
+                }
             }
             else
             {

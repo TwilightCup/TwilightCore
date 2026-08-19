@@ -42,6 +42,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
 | `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
 | `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
+| `Features.ProbeFreezeUnbakedHolds` | `true` | **未烘焙关保持期全黑修复（实验性）**：hold 非烘焙探针的关（Halloween/Steam 以外全部）时，玩家落在其探针凸包内会让所有动态物体（含玩家模型）采到全零系数、完全失去环境光。此项把冻结同样应用到未烘焙组——值取加载前游玩关结构的实采样，换入**不写回**（场景激活时引擎自会重填，避免历史上的过曝级联）。可能存在轻微亮度偏移；关闭则保持期维持全黑 |
 | `Features.PreloadUnloadUnusedAfterSwap` | `true` | **换入后清扫**：每次换入完成、旧场景卸载后执行 `Resources.UnloadUnusedAssets()` 并等待（约 50-145ms）。additive 预载路径会按不同场景累积泄漏 native 资产，长合集（约 12 个不同场景起）最终在场景加载时 OOM 硬崩；清扫即修复（代价是每次换入多一次短卡顿），关闭可做 A/B 对比 |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
@@ -134,8 +135,10 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
   （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
   预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
   保持期染色：烘焙探针的关（如 Halloween/Steam）由 `Features.EnableProbeFreeze`
-  修复（保持期内探针系数冻结为玩家处采样值，换入时写回）；其余未烘焙关维持
-  轻微的下一关染色，换关即恢复（已接受的取舍）。换入完成后自动执行
+  修复（保持期内探针系数冻结为玩家处采样值，换入时写回）；未烘焙关由
+  `Features.ProbeFreezeUnbakedHolds` 处理（玩家落在下一关探针凸包内时表现为
+  动态物体全黑、凸包外为轻微染色，两者同源，冻结后消除；换入不写回）。
+  换入完成后自动执行
   `Resources.UnloadUnusedAssets()` 清扫无引用资产（`Features.
   PreloadUnloadUnusedAfterSwap`）——additive 预载路径会按不同场景累积泄漏
   native 资产，长合集最终 OOM 硬崩（已定案），清扫即修复。完整问题清单与
