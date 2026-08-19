@@ -5,6 +5,7 @@ using HarmonyLib;
 using HumanAPI;
 using Multiplayer;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 namespace TwilightCore.Preload;
@@ -247,6 +248,20 @@ internal static class SwapInSequence
             SceneManager.SetActiveScene(held.Scene);
             held.SceneRS.Apply();
             LightmapSettings.lightmapsMode = held.SceneLMMode;
+            // Probe write-back (tinting fix): BAKED scenes only — the hold
+            // froze their coefficients into a uniform field; restore the real
+            // values now, same sync frame, before render. Unbaked scenes were
+            // never written (managed coefficient writes mis-scale in their
+            // renderer path — see the pipeline's freeze notes).
+            if (held.RealBakedProbes != null)
+            {
+                var lp = LightmapSettings.lightProbes;
+                var live = lp != null ? lp.bakedProbes : null;
+                if (live != null && live.Length == held.RealBakedProbes.Length)
+                    lp.bakedProbes = held.RealBakedProbes;
+                else
+                    Plugin.Logger.LogWarning($"[Preload] probe write-back skipped: live count {(live != null ? live.Length.ToString() : "null")} != saved {held.RealBakedProbes.Length}.");
+            }
             for (int i = 0; i < held.Roots.Length; i++)
                 if (held.RootWasActive[i]) held.Roots[i].SetActive(true);
             // Game fields + currentLevel switch in the same frame: CaveRender

@@ -41,6 +41,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Features.EnableMenuFallLimit` | `true` | 连接比赛服期间限制主菜单小人下落速度（防坠落） |
 | `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
 | `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
+| `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -130,8 +131,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
   关间过渡从数秒加载变为帧级切换，计时器边沿/上报不受影响。相邻同关
   （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
   预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
-  已知取舍：预载完成到换关前，玩家等动态物体会被下一关光照探针轻微染色
-  （换关即恢复）；已知问题与修复路线见 `ignored/M3遗留问题调查-反编译实证.md`。
+  预载完成到换关前的探针染色由 `Features.EnableProbeFreeze` 处理（见配置表）；
+  完整问题清单与修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
 - **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
 - 调试：`twi preload hold/swap/drop/status/rs` 可在不连服务端的情况下手工验证
   驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap

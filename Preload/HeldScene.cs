@@ -99,6 +99,22 @@ internal sealed class HeldScene
     public LightmapsMode SceneLMMode;
     public int PreLoadLMCount;      // diagnostics: table size before the load
 
+    // ── Probe-coefficient freeze (tinting fix; 调查 §1.2) ──────────────────
+    // The additive load switches the engine's light-probe SAMPLING structure
+    // to the held scene's set — dynamic objects then sample the NEXT level's
+    // ambient (including its baked light-source contributions) until the
+    // swap: the hold-window tinting. There is no way to switch the structure
+    // back (asset-pointer assignment breaks sampling), but the COEFFICIENTS
+    // of the ACTIVE set are writable: the pipeline overwrites every
+    // coefficient with the interpolated probe sampled at the player's
+    // position BEFORE the load — a uniform field, identical at every
+    // position, zero tint. The held scene's real coefficients are saved here
+    // and written back at the swap.
+    public SphericalHarmonicsL2 FrozenSh;
+    public bool HasFrozenSh;                    // set when FrozenSh sampled cleanly
+    public SphericalHarmonicsL2[] RealBakedProbes;   // the held scene's own coefficients (null: no probes / save failed)
+    public bool ProbeFreezeApplied;             // the uniform write verifiably took effect (swap must undo it)
+
     /// <summary>Captured/applied bundle of the global RenderSettings.</summary>
     internal struct RenderSettingsSnapshot
     {

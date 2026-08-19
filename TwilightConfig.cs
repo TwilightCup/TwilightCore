@@ -63,6 +63,16 @@ internal static class TwilightConfig
     /// Disable if the in-round loading hurts framerate on target hardware.
     /// </summary>
     public static ConfigEntry<bool> EnableChainedPreload;
+    /// <summary>
+    /// Tinting fix for held-scene preloads: overwrite the active light-probe
+    /// set's coefficients with a uniform field (sampled at the player before the
+    /// load) for the hold window, and write the held scene's real coefficients
+    /// back at the swap. Without it, dynamic objects are tinted by the next
+    /// level's probes (ambient + baked lights) from preload completion until the
+    /// swap. Kill-switch in case the coefficient write misbehaves on some
+    /// Unity build (the hold then just keeps the cosmetic tinting).
+    /// </summary>
+    public static ConfigEntry<bool> EnableProbeFreeze;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -114,6 +124,10 @@ internal static class TwilightConfig
             "M3 chained preload: while playing a collection level, preload the NEXT level additively (dormant, " +
             "low priority) and swap it in at level advance (frame-level transitions). Works for local lc runs too; " +
             "adjacent same levels never preload (Empty-dwell path). Disable if in-round loading hurts framerate.");
+        EnableProbeFreeze = config.Bind("Features", "EnableProbeFreeze", true,
+            "Tinting fix: freeze the active light-probe coefficients to a uniform field (sampled at the player " +
+            "before the preload load) for the hold window; the swap writes the held scene's real coefficients back. " +
+            "Off = dynamic objects are tinted by the next level's probes during the hold (cosmetic, resolves at swap).");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

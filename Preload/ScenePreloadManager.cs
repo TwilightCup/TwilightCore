@@ -8,6 +8,7 @@ using Multiplayer;
 using TwilightCore.Match;
 using TwilightCore.Net;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 namespace TwilightCore.Preload;
@@ -322,6 +323,19 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
     private static bool EnableScenePreloadOn => TwilightConfig.EnableScenePreload.Value;
 
+    /// <summary>
+    /// Where dynamic-object probe sampling is sampled/diagnosed: the local
+    /// player's position, else the camera's, else the origin.
+    /// </summary>
+    private static Vector3 SamplePosition()
+    {
+        foreach (var h in Human.all)
+            if (h != null && h.player != null && h.player.isLocalPlayer)
+                return h.transform.position;
+        if (Camera.main != null) return Camera.main.transform.position;
+        return Vector3.zero;
+    }
+
     // ── P-phase pipeline (调研 §3.1) ─────────────────────────────────────────
 
     /// <summary>
@@ -462,6 +476,30 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         held.PreLoadLMMode = LightmapSettings.lightmapsMode;
         held.PreLoadLMCount = LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0;
 
+        // ── sample the freeze value BEFORE the load (tinting fix) ──
+        // After the load the probe SAMPLING structure belongs to the held
+        // scene; the only correct values left of the current scene are
+        // sampled NOW. GetInterpolatedProbe at the local player's position
+        // (menu: the camera's) is what dynamic objects should keep sampling
+        // through the hold window — frozen into a uniform field below.
+        if (TwilightConfig.EnableProbeFreeze.Value)
+        {
+            try
+            {
+                LightProbes.GetInterpolatedProbe(SamplePosition(), null, out held.FrozenSh);
+                float r = held.FrozenSh[0, 0], g = held.FrozenSh[1, 0], b = held.FrozenSh[2, 0];
+                held.HasFrozenSh = !(float.IsNaN(r) || float.IsNaN(g) || float.IsNaN(b))
+                    && (Mathf.Abs(r) + Mathf.Abs(g) + Mathf.Abs(b)) > 1E-05f;   // all-zero = broken sample
+                Plugin.Logger.LogInfo(
+                    $"[Preload] freeze sample for '{held.SceneName ?? levelId}': {(held.HasFrozenSh ? "ok" : "SKIPPED")} sh0=({r:0.###},{g:0.###},{b:0.###})");
+            }
+            catch (Exception e)
+            {
+                held.HasFrozenSh = false;
+                Plugin.Logger.LogWarning($"[Preload] freeze sample failed: {e.Message} — hold-window tinting will remain.");
+            }
+        }
+
         // ── additive scene load (the heavy part the player would otherwise
         //    wait for after round_start) ──
         held.State = HeldSceneState.LoadingScene;
@@ -533,14 +571,60 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         LightmapSettings.lightmapsMode = held.PreLoadLMMode;   // decode mode back to the playing scene's
         held.PreLoadRS.Apply();
         held.SceneRS = held.PreLoadRS;   // degraded default — the probe overwrites on success
-        // NOTE: lightProbes is deliberately NOT touched. Manual assignment of
-        // LightmapSettings.lightProbes breaks dynamic-object sampling (the
-        // "player goes dark" regression) — the switch is engine-owned and
-        // stays that way (known accepted cosmetic: the tinting during the
-        // hold window; see ignored/M3遗留问题调查-反编译实证.md §1/§2).
+
+        // ── probe-coefficient freeze (tinting fix) ──
+        // The engine switched the active probe set to the held scene's at
+        // load. The SET pointer stays engine-owned (manual assignment breaks
+        // sampling), but for BAKED scenes (Halloween/Steam — the getter
+        // exposes their coefficients) the coefficients can be frozen into a
+        // uniform field and restored exactly at the swap. UNBAKED scenes
+        // (every other built-in: count in the thousands but no baked SH) are
+        // deliberately LEFT ALONE: their renderer lighting flows through a
+        // native fallback whose value convention differs from every managed
+        // readback (real-machine v7 evidence: ambientProbe ≈ amb×1.2,
+        // GetInterpolatedProbe ≈ amb×1.65, renderer path yet another scale —
+        // writing any of them into the coefficients overbrightens dynamic
+        // objects and CASCADES brighter level over level). Their hold-window
+        // tint stays an accepted cosmetic (next-level colour, resolves at
+        // the swap); only a native/icall-level approach could suppress it.
+        try
+        {
+            var lp = LightmapSettings.lightProbes;
+            var bakedArr = lp != null ? lp.bakedProbes : null;
+            held.RealBakedProbes = lp != null && bakedArr != null && bakedArr.Length == lp.count ? bakedArr : null;
+            if (held.RealBakedProbes != null && held.HasFrozenSh)
+            {
+                var uniform = new SphericalHarmonicsL2[lp.count];
+                for (int i = 0; i < uniform.Length; i++) uniform[i] = held.FrozenSh;
+                lp.bakedProbes = uniform;
+                var back = lp.bakedProbes;   // verify the write took
+                held.ProbeFreezeApplied = back != null && back.Length == lp.count
+                    && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
+                    && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
+                    && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
+                Plugin.Logger.LogInfo(
+                    $"[Preload] probe freeze: count={lp.count} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
+            }
+            else
+            {
+                Plugin.Logger.LogInfo(
+                    $"[Preload] probe freeze: {(held.RealBakedProbes == null ? "unbaked scene — coefficients left alone (managed writes mis-scale in the renderer path); hold-window tint remains" : "no clean sample — coefficients untouched")}{(lp != null ? $", count={lp.count}" : "")}.");
+            }
+        }
+        catch (Exception e)
+        {
+            held.RealBakedProbes = null;
+            held.ProbeFreezeApplied = false;
+            Plugin.Logger.LogWarning($"[Preload] probe freeze failed: {e.Message} — hold-window tinting will remain.");
+        }
+
+        // NOTE: the lightProbes POINTER is deliberately not assigned. Manual
+        // assignment of LightmapSettings.lightProbes breaks dynamic-object
+        // sampling (the "player goes dark" regression) — the switch is
+        // engine-owned and stays that way.
         Plugin.Logger.LogInfo(
             $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
-            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — left alone)")}");
+            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — coefficients frozen)")}");
 
         // ── RS probe: learn the held scene's OWN RenderSettings ──
         // The engine never applies them for an additive load — but activation
@@ -558,6 +642,29 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // permanently latch UNDERWATER fog into the next level (调查 §3.2
         // 锁存 B).
         yield return StartCoroutine(RsProbe(held));
+
+        // What dynamic objects sample DURING the hold (diagnostics): compared
+        // against the pre-load freeze sample, any difference is the residual
+        // tinting channel. Early built-in scenes report bakedProbes.Length==0
+        // yet carry per-level sampled data (their freeze samples differ per
+        // level) — the managed coefficient array just can't read/write them.
+        try
+        {
+            SphericalHarmonicsL2 post;
+            LightProbes.GetInterpolatedProbe(SamplePosition(), null, out post);
+            bool matchesFrozen = held.HasFrozenSh
+                && Mathf.Approximately(post[0, 0], held.FrozenSh[0, 0])
+                && Mathf.Approximately(post[1, 0], held.FrozenSh[1, 0])
+                && Mathf.Approximately(post[2, 0], held.FrozenSh[2, 0]);
+            Plugin.Logger.LogInfo(
+                $"[Preload] hold sampling '{held.SceneName}': post-load live sh0=({post[0, 0]:0.###},{post[1, 0]:0.###},{post[2, 0]:0.###})" +
+                (held.HasFrozenSh ? $" frozen=({held.FrozenSh[0, 0]:0.###},{held.FrozenSh[1, 0]:0.###},{held.FrozenSh[2, 0]:0.###}) match={matchesFrozen}" : "") +
+                $"; probes count={(LightmapSettings.lightProbes != null ? LightmapSettings.lightProbes.count.ToString() : "null")}");
+        }
+        catch (Exception e)
+        {
+            Plugin.Logger.LogWarning($"[Preload] hold sampling dump failed: {e.Message}");
+        }
 
         // Final drop/wanted check — the freeze+probe crossed frames, during
         // which a drop may have arrived (pick change / phase left PREP / the
@@ -981,6 +1088,37 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         sb.Append($"activeScene='{active.name}' lmCount={(LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0)} lmMode={LightmapSettings.lightmapsMode}");
         var probes = LightmapSettings.lightProbes;
         sb.Append($"\nprobes: {(probes != null ? probes.GetInstanceID() + " '" + probes.name + "'" : "null")}");
+        if (probes != null)
+        {
+            var baked = probes.bakedProbes;
+            var positions = probes.positions;
+            sb.Append($"\nprobes detail: count={probes.count} bakedProbes.Length={(baked != null ? baked.Length.ToString() : "null")} positions.Length={(positions != null ? positions.Length.ToString() : "null")}");
+            if (baked != null && baked.Length > 0)
+                sb.Append($"\nprobes[0] sh0=({baked[0][0, 0]:0.###},{baked[0][1, 0]:0.###},{baked[0][2, 0]:0.###}) (uniform if frozen)");
+        }
+
+        // What a dynamic object samples RIGHT NOW at the player's position, and
+        // the ambient fallback — the two candidate tinting channels.
+        SphericalHarmonicsL2 live;
+        LightProbes.GetInterpolatedProbe(SamplePosition(), null, out live);
+        var ap = RenderSettings.ambientProbe;
+        sb.Append($"\nliveProbe(player) sh0=({live[0, 0]:0.###},{live[1, 0]:0.###},{live[2, 0]:0.###})  ambientProbe sh0=({ap[0, 0]:0.###},{ap[1, 0]:0.###},{ap[2, 0]:0.###})");
+
+        // Active realtime lights per loaded scene — a dormant held scene must
+        // contribute none; if it does, that is a separate tinting channel.
+        int lightTotal = 0;
+        var lightSb = new StringBuilder();
+        for (int i = 0; i < SceneManager.sceneCount; i++)
+        {
+            var sc = SceneManager.GetSceneAt(i);
+            if (!sc.isLoaded) continue;
+            int n = 0;
+            foreach (var root in sc.GetRootGameObjects())
+                n += root.GetComponentsInChildren<Light>(false).Length;   // active-in-hierarchy only
+            if (n > 0) lightSb.Append($" {sc.name}:{n}");
+            lightTotal += n;
+        }
+        sb.Append($"\nactiveLights: total={lightTotal}{(lightSb.Length > 0 ? " (" + lightSb.ToString().Trim() + ")" : "")}");
         sb.Append($"\nambient: mode={RenderSettings.ambientMode} light={RenderSettings.ambientLight} intensity={RenderSettings.ambientIntensity:0.###}");
         sb.Append($"\nfog: {RenderSettings.fog}/{RenderSettings.fogColor}/d={RenderSettings.fogDensity:0.####}/{RenderSettings.fogMode} (multiplier={CaveRender.fogDensityMultiplier:0.##})");
         sb.Append($"\nsun={(RenderSettings.sun != null ? RenderSettings.sun.name : "none")} skybox={(RenderSettings.skybox != null ? RenderSettings.skybox.name : "none")}");
