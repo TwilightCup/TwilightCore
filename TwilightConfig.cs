@@ -111,6 +111,20 @@ internal static class TwilightConfig
 
     // ── Debug ──────────────────────────────────────────────────────
     public static ConfigEntry<bool> VerboseNetLog;
+    /// <summary>
+    /// Verbose preload diagnostics: the per-hold/per-swap state dumps from the
+    /// lighting/OOM investigations — load-start table signatures, the
+    /// lighting-freeze detail (table IDs, mode, probes), probe-freeze
+    /// sampling/verification, the hold-sampling comparison, post-swap table
+    /// and memory signatures, sweep timings, and the engine-applied-rs suffix
+    /// on the activate timing line. Pure logging — behavior is identical
+    /// either way; warnings/errors always log, and `twi preload rs` (an
+    /// explicit command) always dumps.
+    /// </summary>
+    public static ConfigEntry<bool> DebugPreloadLogger;
+
+    /// <summary>Whether DebugPreloadLogger is on (null-safe before Init).</summary>
+    internal static bool PreloadDebugLogging => DebugPreloadLogger != null && DebugPreloadLogger.Value;
 
     /// <summary>The BepInEx config file, kept so <c>twi reload</c> can hot-reload it.</summary>
     private static ConfigFile _config;
@@ -169,6 +183,10 @@ internal static class TwilightConfig
         HudFontSize = config.Bind("HUD", "FontSize", 18, "HUD font size.");
 
         VerboseNetLog = config.Bind("Debug", "VerboseNetLog", false, "Log every sent/received WebSocket frame.");
+        DebugPreloadLogger = config.Bind("Debug", "DebugPreloadLogger", false,
+            "Verbose preload diagnostic logging (per-hold/per-swap lighting, probe, lightmap-table and memory state " +
+            "dumps, sweep timings). Pure logging — behavior is identical either way; warnings/errors always log, " +
+            "and `twi preload rs` always dumps. Hot-reloadable via `twi reload`.");
     }
 
     /// <summary>

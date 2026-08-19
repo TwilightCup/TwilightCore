@@ -51,6 +51,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `HUD.TextColor` | `FFD94C` | HUD 文本颜色，hex 编码（`RRGGBB` 或 `RRGGBBAA`，可带 `#`） |
 | `HUD.FontSize` | `18` | HUD 字号（与 TwilightTimer 计时器默认一致） |
 | `Debug.VerboseNetLog` | `false` | 打印每条收发帧 |
+| `Debug.DebugPreloadLogger` | `false` | 预载详细诊断日志：逐 hold/换入的光照探针、光照贴图表签名、内存快照、清扫耗时等状态转储（排查光照/内存问题用）。纯日志开关，行为完全一致；警告与错误不受影响，`twi preload rs` 始终可用。可用 `twi reload` 热切换 |
 
 ## 控制台命令
 

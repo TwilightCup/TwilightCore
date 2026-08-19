@@ -490,8 +490,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 float r = held.FrozenSh[0, 0], g = held.FrozenSh[1, 0], b = held.FrozenSh[2, 0];
                 held.HasFrozenSh = !(float.IsNaN(r) || float.IsNaN(g) || float.IsNaN(b))
                     && (Mathf.Abs(r) + Mathf.Abs(g) + Mathf.Abs(b)) > 1E-05f;   // all-zero = broken sample
-                Plugin.Logger.LogInfo(
-                    $"[Preload] freeze sample for '{held.SceneName ?? levelId}': {(held.HasFrozenSh ? "ok" : "SKIPPED")} sh0=({r:0.###},{g:0.###},{b:0.###})");
+                if (TwilightConfig.PreloadDebugLogging)
+                    Plugin.Logger.LogInfo(
+                        $"[Preload] freeze sample for '{held.SceneName ?? levelId}': {(held.HasFrozenSh ? "ok" : "SKIPPED")} sh0=({r:0.###},{g:0.###},{b:0.###})");
             }
             catch (Exception e)
             {
@@ -520,8 +521,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // of what the engine was handed: if the outgoing swap's unload failed
         // to remove its lightmap entries, the stale/freed IDs show up HERE
         // (the integration then walks them).
-        Plugin.Logger.LogInfo(
-            $"[Preload] load start: '{sceneName}' — pre-load table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
+        if (TwilightConfig.PreloadDebugLogging)
+            Plugin.Logger.LogInfo(
+                $"[Preload] load start: '{sceneName}' — pre-load table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
 
         AsyncOperation op = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Additive);
         if (op == null)
@@ -584,15 +586,14 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // assignment of LightmapSettings.lightProbes breaks dynamic-object
         // sampling (the "player goes dark" regression) — the switch is
         // engine-owned and stays that way.
-        // The table-ids pair is the append/dedup/replace discriminator for the
-        // lightmapped-coexistence crash investigation (LightingDiagnostics):
-        // ids that survive the load = shared/deduped entries; an all-new id set
-        // = the engine replaced the table.
-        var tableIdsAfter = LightingDiagnostics.TableIds();
-        Plugin.Logger.LogInfo(
-            $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, table {LightingDiagnostics.FormatTableIds(held.PreLoadTableIds)} -> {LightingDiagnostics.FormatTableIds(tableIdsAfter)}, " +
-            $"mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
-            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — engine-owned)")}");
+        if (TwilightConfig.PreloadDebugLogging)
+        {
+            var tableIdsAfter = LightingDiagnostics.TableIds();
+            Plugin.Logger.LogInfo(
+                $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, table {LightingDiagnostics.FormatTableIds(held.PreLoadTableIds)} -> {LightingDiagnostics.FormatTableIds(tableIdsAfter)}, " +
+                $"mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
+                $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — engine-owned)")}");
+        }
 
         // ── probe-coefficient freeze (tinting fix) ──
         // The engine switched the active probe set to the held scene's at
@@ -628,8 +629,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                     && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
                     && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
                     && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
-                Plugin.Logger.LogInfo(
-                    $"[Preload] probe freeze: count={lp.count} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
+                if (TwilightConfig.PreloadDebugLogging)
+                    Plugin.Logger.LogInfo(
+                        $"[Preload] probe freeze: count={lp.count} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
             }
             else if (held.RealBakedProbes == null && lp != null && held.HasFrozenSh
                 && TwilightConfig.ProbeFreezeUnbakedHolds != null && TwilightConfig.ProbeFreezeUnbakedHolds.Value)
@@ -657,8 +659,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                         && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
                         && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
                         && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
-                    Plugin.Logger.LogInfo(
-                        $"[Preload] probe freeze (unbaked, experimental): count={lp.count} uniform-written={(held.UnbakedFreezeApplied ? "verified" : "UNVERIFIED")} — hold-window blackness should be gone; activation re-applies real values at the swap (no write-back).");
+                    if (TwilightConfig.PreloadDebugLogging)
+                        Plugin.Logger.LogInfo(
+                            $"[Preload] probe freeze (unbaked, experimental): count={lp.count} uniform-written={(held.UnbakedFreezeApplied ? "verified" : "UNVERIFIED")} — hold-window blackness should be gone; activation re-applies real values at the swap (no write-back).");
                 }
                 catch (Exception e)
                 {
@@ -666,7 +669,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                     Plugin.Logger.LogWarning($"[Preload] unbaked probe freeze failed: {e.Message} — hold-window blackness will remain.");
                 }
             }
-            else
+            else if (TwilightConfig.PreloadDebugLogging)
             {
                 Plugin.Logger.LogInfo(
                     $"[Preload] probe freeze: {(held.RealBakedProbes == null ? "unbaked scene — coefficients left alone (managed writes mis-scale in the renderer path); hold-window tint remains" : "no clean sample — coefficients untouched")}{(lp != null ? $", count={lp.count}" : "")}.");
@@ -682,22 +685,25 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // What dynamic objects sample DURING the hold (diagnostics): compared
         // against the pre-load freeze sample, any difference is the residual
         // tinting channel.
-        try
+        if (TwilightConfig.PreloadDebugLogging)
         {
-            SphericalHarmonicsL2 post;
-            LightProbes.GetInterpolatedProbe(SamplePosition(), null, out post);
-            bool matchesFrozen = held.HasFrozenSh
-                && Mathf.Approximately(post[0, 0], held.FrozenSh[0, 0])
-                && Mathf.Approximately(post[1, 0], held.FrozenSh[1, 0])
-                && Mathf.Approximately(post[2, 0], held.FrozenSh[2, 0]);
-            Plugin.Logger.LogInfo(
-                $"[Preload] hold sampling '{held.SceneName}': post-load live sh0=({post[0, 0]:0.###},{post[1, 0]:0.###},{post[2, 0]:0.###})" +
-                (held.HasFrozenSh ? $" frozen=({held.FrozenSh[0, 0]:0.###},{held.FrozenSh[1, 0]:0.###},{held.FrozenSh[2, 0]:0.###}) match={matchesFrozen}" : "") +
-                $"; probes count={(LightmapSettings.lightProbes != null ? LightmapSettings.lightProbes.count.ToString() : "null")}");
-        }
-        catch (Exception e)
-        {
-            Plugin.Logger.LogWarning($"[Preload] hold sampling dump failed: {e.Message}");
+            try
+            {
+                SphericalHarmonicsL2 post;
+                LightProbes.GetInterpolatedProbe(SamplePosition(), null, out post);
+                bool matchesFrozen = held.HasFrozenSh
+                    && Mathf.Approximately(post[0, 0], held.FrozenSh[0, 0])
+                    && Mathf.Approximately(post[1, 0], held.FrozenSh[1, 0])
+                    && Mathf.Approximately(post[2, 0], held.FrozenSh[2, 0]);
+                Plugin.Logger.LogInfo(
+                    $"[Preload] hold sampling '{held.SceneName}': post-load live sh0=({post[0, 0]:0.###},{post[1, 0]:0.###},{post[2, 0]:0.###})" +
+                    (held.HasFrozenSh ? $" frozen=({held.FrozenSh[0, 0]:0.###},{held.FrozenSh[1, 0]:0.###},{held.FrozenSh[2, 0]:0.###}) match={matchesFrozen}" : "") +
+                    $"; probes count={(LightmapSettings.lightProbes != null ? LightmapSettings.lightProbes.count.ToString() : "null")}");
+            }
+            catch (Exception e)
+            {
+                Plugin.Logger.LogWarning($"[Preload] hold sampling dump failed: {e.Message}");
+            }
         }
 
         Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}");
@@ -920,8 +926,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             float tSweep = Time.realtimeSinceStartup;
             var sweep = Resources.UnloadUnusedAssets();
             while (sweep != null && !sweep.isDone) yield return null;
-            Plugin.Logger.LogInfo(
-                $"[Preload] unload-unused sweep after '{held.SceneName}': {(Time.realtimeSinceStartup - tSweep) * 1000f:0} ms; {LightingDiagnostics.MemorySignature()}");
+            if (TwilightConfig.PreloadDebugLogging)
+                Plugin.Logger.LogInfo(
+                    $"[Preload] unload-unused sweep after '{held.SceneName}': {(Time.realtimeSinceStartup - tSweep) * 1000f:0} ms; {LightingDiagnostics.MemorySignature()}");
         }
         _swapRunning = false;
     }

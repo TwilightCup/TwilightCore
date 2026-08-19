@@ -281,7 +281,7 @@ internal static class SwapInSequence
         });
         if (err != null) { onFallback(held, err); yield break; }
         Plugin.Logger.LogInfo(
-            $"[Preload] swap timing: activate {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms; engine-applied rs={appliedRS.Describe()}");
+            $"[Preload] swap timing: activate {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms{(TwilightConfig.PreloadDebugLogging ? $"; engine-applied rs={appliedRS.Describe()}" : "")}");
 
         // ── runtime-joint rebuild (THE machine fix) ──
         // The HumanAPI joint system (AngularJoint & co.) creates its
@@ -408,6 +408,6 @@ internal static class SwapInSequence
         if (err != null) { onFallback(held, err); yield break; }
 
         Plugin.Logger.LogInfo(
-            $"[Preload] swap-in complete: '{held.LevelId}' (scene '{held.SceneName}') in {(Time.realtimeSinceStartup - t0) * 1000f:0} ms total; post-swap table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
+            $"[Preload] swap-in complete: '{held.LevelId}' (scene '{held.SceneName}') in {(Time.realtimeSinceStartup - t0) * 1000f:0} ms total{(TwilightConfig.PreloadDebugLogging ? $"; post-swap table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}" : "")}");
     }
 }
