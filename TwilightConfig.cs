@@ -73,6 +73,13 @@ internal static class TwilightConfig
     /// Unity build (the hold then just keeps the cosmetic tinting).
     /// </summary>
     public static ConfigEntry<bool> EnableProbeFreeze;
+    /// <summary>
+    /// After each swap-in, run Resources.UnloadUnusedAssets() (and wait it out).
+    /// The additive preload path leaks native memory per DISTINCT scene until
+    /// the process dies at a later scene integration (OOM); the sweep collects
+    /// the residue. Adds a short hitch per swap — toggle off to A/B.
+    /// </summary>
+    public static ConfigEntry<bool> PreloadUnloadUnusedAfterSwap;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -128,6 +135,10 @@ internal static class TwilightConfig
             "Tinting fix: freeze the active light-probe coefficients to a uniform field (sampled at the player " +
             "before the preload load) for the hold window; the swap writes the held scene's real coefficients back. " +
             "Off = dynamic objects are tinted by the next level's probes during the hold (cosmetic, resolves at swap).");
+        PreloadUnloadUnusedAfterSwap = config.Bind("Features", "PreloadUnloadUnusedAfterSwap", true,
+            "After each swap-in, run Resources.UnloadUnusedAssets() and wait it out. The additive preload path " +
+            "leaks memory per distinct scene until OOM; the sweep collects the residue. " +
+            "Adds a short hitch per swap — toggle off to A/B.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

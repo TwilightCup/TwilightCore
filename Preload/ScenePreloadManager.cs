@@ -950,6 +950,27 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private IEnumerator SwapRunner(HeldScene held)
     {
         yield return SwapInSequence.Run(held, OnSwapInFallback, OnOutgoingUnload);
+
+        // OOM fix: the additive preload path leaks native memory per DISTINCT
+        // scene — after the swap unloads the outgoing scene, its assets stay
+        // unreferenced but are never collected (nothing on this path runs the
+        // engine's asset GC), and after ~11 distinct levels a later additive
+        // scene integration dies inside UnityPlayer.dll ('out of memory', hard
+        // native crash — no managed exception, no usable stack under Wine).
+        // Same-scene repeats never accumulate and the standard Single-load
+        // path doesn't leak (vanilla campaigns finish), so the sweep here is
+        // the missing collection step: the outgoing scene is fully gone,
+        // whatever it kept alive is unreferenced, and UnloadUnusedAssets
+        // collects it (~50-145ms per swap). Verified: the previously-crashing
+        // full Any% order completes all 13 levels with this enabled.
+        if (TwilightConfig.PreloadUnloadUnusedAfterSwap != null && TwilightConfig.PreloadUnloadUnusedAfterSwap.Value)
+        {
+            float tSweep = Time.realtimeSinceStartup;
+            AsyncOperation sweep = Resources.UnloadUnusedAssets();
+            while (sweep != null && !sweep.isDone) yield return null;
+            Plugin.Logger.LogInfo(
+                $"[Preload] unload-unused sweep after '{held.SceneName}': {(Time.realtimeSinceStartup - tSweep) * 1000f:0} ms; mono={(GC.GetTotalMemory(false) >> 20)}MB");
+        }
         _swapRunning = false;
     }
 
