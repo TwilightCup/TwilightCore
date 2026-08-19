@@ -78,12 +78,11 @@ internal static class TwilightConfig
     /// (every level except Halloween/Steam — their probe sets carry no readable
     /// coefficients, so during the hold window dynamic objects sample zeros:
     /// the "everything loses ambient and goes dark" artifact, including the
-    /// player model). The uniform value is sampled from the PLAYING scene's
-    /// structure before the load (same source as the baked-scene freeze); the
+    /// player model). The uniform's value source adapts: a sample from a BAKED
+    /// playing structure when available (verified correct), else the playing
+    /// scene's flat ambient light with an empirically calibrated scale. The
     /// swap writes nothing back — scene activation re-applies the held scene's
-    /// own values. The renderer's fallback path may scale the written uniform
-    /// slightly differently (possible mild over/under-brightness — one-shot,
-    /// non-cascading). Off = hold windows of unbaked levels stay dark.
+    /// own values. Off = hold windows of unbaked levels stay dark.
     /// </summary>
     public static ConfigEntry<bool> ProbeFreezeUnbakedHolds;
     /// <summary>

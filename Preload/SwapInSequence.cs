@@ -269,6 +269,25 @@ internal static class SwapInSequence
                 else
                     Plugin.Logger.LogWarning($"[Preload] probe write-back skipped: live count {(live != null ? live.Length.ToString() : "null")} != saved {held.RealBakedProbes.Length}.");
             }
+            else if (held.UnbakedFreezeApplied)
+            {
+                // Unbaked held scene: the hold's uniform (carrying the
+                // PREVIOUS scene's ambient) is still in the active set —
+                // activation does NOT re-apply anything (established the hard
+                // way: the residue poisons the next hold's sampling and its
+                // readback gain cascaded brighter level over level). Refresh
+                // it to THIS scene's own ambient, which SetActiveScene just
+                // applied — ambient-derived, so no readback gain, no cascade;
+                // the next hold's uniform then sources this same ambient.
+                var lpU = LightmapSettings.lightProbes;
+                if (lpU != null && lpU.count > 0)
+                {
+                    var sh = ScenePreloadManager.AmbientUniformSh();
+                    var uniform = new SphericalHarmonicsL2[lpU.count];
+                    for (int i = 0; i < uniform.Length; i++) uniform[i] = sh;
+                    lpU.bakedProbes = uniform;
+                }
+            }
             for (int i = 0; i < held.Roots.Length; i++)
                 if (held.RootWasActive[i]) held.Roots[i].SetActive(true);
             // Game fields + currentLevel switch in the same frame: CaveRender

@@ -123,6 +123,8 @@ internal sealed class HeldScene
     // block for the scaling evidence behind that split.
     public SphericalHarmonicsL2 FrozenSh;
     public bool HasFrozenSh;                    // set when FrozenSh sampled cleanly
+    public bool FrozenFromBakedStructure;       // the sample came off a BAKED, UNPOLLUTED structure (real coefficients — safe to write as-is)
+    public bool FrozenFromPollutedSet;          // the sample came off a set WE wrote a uniform into — the API reads our values back with a ~2x gain; never write such a sample again
     public SphericalHarmonicsL2[] RealBakedProbes;   // the held scene's own coefficients (null: no probes / save failed)
     public bool ProbeFreezeApplied;             // the uniform write verifiably took effect (swap must undo it)
     public bool UnbakedFreezeApplied;           // experimental: uniform frozen into an UNBAKED set (no swap write-back — activation re-applies)

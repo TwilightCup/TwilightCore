@@ -84,6 +84,15 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
     private MatchPhase _lastPhase = MatchPhase.Idle;
 
+    // True while the ACTIVE probe set's coefficients contain a uniform field
+    // WE wrote (unbaked freeze / swap refresh). Such a set "looks baked" to
+    // the length check, and GetInterpolatedProbe reads our values back with a
+    // ~2x gain (light.log cascade: 0.18 → 0.35 → 0.54 → 0.73 → 0.91 …) —
+    // sampling it and writing the result again compounds level over level.
+    // Cleared when real coefficients are written back at a baked swap-in, or
+    // when any external (non-preload) scene load rebuilds the structure.
+    private bool _probeSetHoldsUniform;
+
     // Latest announced pick (PREVIEW only — round_start stays authoritative).
     private PickSnapshot _announced;
     private string _announcedFirstLevel;
@@ -323,6 +332,31 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
     private static bool EnableScenePreloadOn => TwilightConfig.EnableScenePreload.Value;
 
+    // Empirical scale for the ambient-derived uniform written into unbaked
+    // probe sets: the target is the pre-hold look of the playing scene (its
+    // flat-ambient lighting), and the probe-write render path amplifies
+    // written coefficients — 0.40 measured slightly too bright on the real
+    // machine, 0.35 tuned to match (baked-source writes, which sample real
+    // coefficients instead, need no such factor). Ambient-derived values
+    // carry no readback gain, so this cannot cascade.
+    private const float UnbakedFreezeAmbientShScale = 0.35f;
+
+    /// <summary>
+    /// A uniform SH built from the CURRENT flat ambient (whatever scene is
+    /// active at call time) with the calibrated scale — the only value
+    /// source for uniform writes that carries no readback gain and therefore
+    /// cannot cascade.
+    /// </summary>
+    internal static SphericalHarmonicsL2 AmbientUniformSh()
+    {
+        var amb = RenderSettings.ambientLight;
+        var sh = new SphericalHarmonicsL2();
+        sh[0, 0] = amb.r * UnbakedFreezeAmbientShScale;
+        sh[1, 0] = amb.g * UnbakedFreezeAmbientShScale;
+        sh[2, 0] = amb.b * UnbakedFreezeAmbientShScale;
+        return sh;
+    }
+
     /// <summary>
     /// Where dynamic-object probe sampling is sampled/diagnosed: the local
     /// player's position, else the camera's, else the origin.
@@ -490,6 +524,20 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 float r = held.FrozenSh[0, 0], g = held.FrozenSh[1, 0], b = held.FrozenSh[2, 0];
                 held.HasFrozenSh = !(float.IsNaN(r) || float.IsNaN(g) || float.IsNaN(b))
                     && (Mathf.Abs(r) + Mathf.Abs(g) + Mathf.Abs(b)) > 1E-05f;   // all-zero = broken sample
+                // Whether the sample came off a BAKED, UNPOLLUTED structure
+                // (real coefficients — writes display correctly), off a set
+                // we previously wrote a uniform into (the API reads our own
+                // values back with a ~2x gain — never re-write a sample taken
+                // from one), or off the API's fallback for an unbaked playing
+                // scene (≈ambient×0.7-1.0 — writes come out ~2x too hot and
+                // clamp toward white). The freeze sites pick their uniform's
+                // source accordingly.
+                var lpSrc = LightmapSettings.lightProbes;
+                var arrSrc = lpSrc != null ? lpSrc.bakedProbes : null;
+                held.FrozenFromPollutedSet = _probeSetHoldsUniform;
+                held.FrozenFromBakedStructure = lpSrc != null && arrSrc != null
+                    && arrSrc.Length == lpSrc.count && lpSrc.count > 0
+                    && !_probeSetHoldsUniform;
                 if (TwilightConfig.PreloadDebugLogging)
                     Plugin.Logger.LogInfo(
                         $"[Preload] freeze sample for '{held.SceneName ?? levelId}': {(held.HasFrozenSh ? "ok" : "SKIPPED")} sh0=({r:0.###},{g:0.###},{b:0.###})");
@@ -621,19 +669,27 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             held.RealBakedProbes = lp != null && bakedArr != null && bakedArr.Length == lp.count ? bakedArr : null;
             if (held.RealBakedProbes != null && held.HasFrozenSh)
             {
+                // Value source: a clean structure sample renders correctly
+                // (verified across eras); a sample taken off a set we polluted
+                // reads back gained (~2x) and must not be re-written — use the
+                // ambient-derived uniform instead (gain-free by construction).
+                SphericalHarmonicsL2 uniformSh = held.FrozenFromPollutedSet
+                    ? AmbientUniformSh()
+                    : held.FrozenSh;
                 var uniform = new SphericalHarmonicsL2[lp.count];
-                for (int i = 0; i < uniform.Length; i++) uniform[i] = held.FrozenSh;
+                for (int i = 0; i < uniform.Length; i++) uniform[i] = uniformSh;
                 lp.bakedProbes = uniform;
                 var back = lp.bakedProbes;   // verify the write took
                 held.ProbeFreezeApplied = back != null && back.Length == lp.count
-                    && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
-                    && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
-                    && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
+                    && Mathf.Approximately(back[0][0, 0], uniformSh[0, 0])
+                    && Mathf.Approximately(back[0][1, 0], uniformSh[1, 0])
+                    && Mathf.Approximately(back[0][2, 0], uniformSh[2, 0]);
+                _probeSetHoldsUniform = true;   // active set holds our uniform until the swap's write-back
                 if (TwilightConfig.PreloadDebugLogging)
                     Plugin.Logger.LogInfo(
-                        $"[Preload] probe freeze: count={lp.count} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
+                        $"[Preload] probe freeze: count={lp.count} source={(held.FrozenFromPollutedSet ? "flat-ambient (polluted sample avoided)" : "structure sample")} uniform-written={(held.ProbeFreezeApplied ? "verified" : "UNVERIFIED")} (baked scene — real values saved for the swap).");
             }
-            else if (held.RealBakedProbes == null && lp != null && held.HasFrozenSh
+            else if (held.RealBakedProbes == null && lp != null
                 && TwilightConfig.ProbeFreezeUnbakedHolds != null && TwilightConfig.ProbeFreezeUnbakedHolds.Value)
             {
                 // Unbaked held scene (every level except Halloween/Steam): the
@@ -641,27 +697,49 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 // with ZERO coefficients, and with the player inside its hull
                 // every probe-using renderer samples zeros — dynamic objects
                 // lose ambient entirely and go black (player model included).
-                // Freeze the same way as baked scenes, with the value sampled
-                // from the PLAYING scene's structure before the load. The swap
-                // deliberately writes NOTHING back: scene activation re-applies
+                // Freeze with NO swap write-back: scene activation re-applies
                 // the held scene's own values (observed: own-play sampling on a
                 // zero-coefficient set is non-zero), and re-deriving values at
                 // the swap is what made the old v7 attempt overbrighten and
-                // cascade. The renderer's fallback path may scale the uniform
-                // slightly differently — watch for a mild brightness offset.
+                // cascade. VALUE SOURCE (the white-glow fix): a sample from a
+                // BAKED playing structure renders correctly when written
+                // (verified on Steam holds: sh0 ≈ ambient×0.36-0.46); a sample
+                // off an UNBAKED playing structure is the API's own fallback
+                // (≈ambient×0.7-1.0) and comes out ~2x too hot through the
+                // probe-write path — everything clamps toward white. In that
+                // case derive the uniform from the playing scene's flat
+                // ambient with the empirically verified ratio instead.
                 try
                 {
+                    SphericalHarmonicsL2 uniformSh;
+                    string source;
+                    if (held.FrozenFromBakedStructure && held.HasFrozenSh)
+                    {
+                        uniformSh = held.FrozenSh;
+                        source = "baked-structure sample";
+                    }
+                    else
+                    {
+                        // Unbaked playing scene OR a set we polluted with an
+                        // earlier uniform (the API reads our values back with a
+                        // ~2x gain — re-writing samples taken from it cascaded
+                        // brighter level over level). Ambient-derived uniforms
+                        // carry no readback gain and cannot cascade.
+                        uniformSh = AmbientUniformSh();
+                        source = "flat-ambient (unbaked/polluted source)";
+                    }
                     var uniform = new SphericalHarmonicsL2[lp.count];
-                    for (int i = 0; i < uniform.Length; i++) uniform[i] = held.FrozenSh;
+                    for (int i = 0; i < uniform.Length; i++) uniform[i] = uniformSh;
                     lp.bakedProbes = uniform;
+                    _probeSetHoldsUniform = true;   // survives the swap (no write-back); the swap REFRESHES it to the new scene's ambient
                     var back = lp.bakedProbes;
                     held.UnbakedFreezeApplied = back != null && back.Length == lp.count
-                        && Mathf.Approximately(back[0][0, 0], held.FrozenSh[0, 0])
-                        && Mathf.Approximately(back[0][1, 0], held.FrozenSh[1, 0])
-                        && Mathf.Approximately(back[0][2, 0], held.FrozenSh[2, 0]);
+                        && Mathf.Approximately(back[0][0, 0], uniformSh[0, 0])
+                        && Mathf.Approximately(back[0][1, 0], uniformSh[1, 0])
+                        && Mathf.Approximately(back[0][2, 0], uniformSh[2, 0]);
                     if (TwilightConfig.PreloadDebugLogging)
                         Plugin.Logger.LogInfo(
-                            $"[Preload] probe freeze (unbaked, experimental): count={lp.count} uniform-written={(held.UnbakedFreezeApplied ? "verified" : "UNVERIFIED")} — hold-window blackness should be gone; activation re-applies real values at the swap (no write-back).");
+                            $"[Preload] probe freeze (unbaked, experimental): count={lp.count} source={source} uniform-written={(held.UnbakedFreezeApplied ? "verified" : "UNVERIFIED")} — the swap refreshes this uniform to the held scene's own ambient.");
                 }
                 catch (Exception e)
                 {
@@ -737,6 +815,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // Any other load (e.g. returning to the menu from a practice level) may
         // make the preload gates newly satisfiable. A Single-mode load also means
         // a held scene is about to be destroyed — OnSceneUnloaded handles that.
+        // An external load also rebuilds the probe structure from scratch —
+        // any uniform we wrote into the previous set is gone.
+        _probeSetHoldsUniform = false;
         MaybeStartPreload();
     }
 
@@ -912,6 +993,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private IEnumerator SwapRunner(HeldScene held)
     {
         yield return SwapInSequence.Run(held, OnSwapInFallback, OnOutgoingUnload);
+
+        // Probe-set pollution bookkeeping: a baked swap-in wrote the real
+        // coefficients back (set clean again); an unbaked swap-in left (and
+        // refreshed) our ambient uniform in the active set.
+        _probeSetHoldsUniform = held.UnbakedFreezeApplied;
 
         // OOM fix: the additive preload path leaks native memory per DISTINCT
         // scene until the process dies inside a later scene integration
