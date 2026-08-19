@@ -40,6 +40,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Features.SameLevelReloadMinDwell` | `1` | 合集连续进同一关时绕道 `Empty` 场景的最短停留秒数（视觉上区分两次尝试）；`0` 关闭绕道 |
 | `Features.EnableMenuFallLimit` | `true` | 连接比赛服期间限制主菜单小人下落速度（防坠落） |
 | `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
+| `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -75,10 +76,11 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi sim complete [final_ms]` | 模拟整回合完成 |
 | `twi sim forfeit [multi_exit\|single_exit_0_valid]` | 模拟弃权 |
 | `twi sim status` | 模拟计时器状态 |
-| `twi preload hold <levelId>` | **M1 验证**：主菜单下把指定关卡以 additive+休眠方式驻留（不经比赛流程）。id 同合集配置：内置关用显示名（`Aztec`、`Steam`…，区分大小写）或已订阅的 workshop id |
-| `twi preload swap` | **M1 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
+| `twi preload hold <levelId>` | **M1/M3 验证**：把指定关卡以 additive+休眠方式驻留（不经比赛流程）；主菜单或游玩中的关卡内均可（后者即链式预载形态）。id 同合集配置：内置关用显示名（`Aztec`、`Steam`…，区分大小写）或已订阅的 workshop id |
+| `twi preload swap` | **M1/M3 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
 | `twi preload drop` | 丢弃驻留场景并卸载 |
 | `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
+| `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表），排查换入光照问题用 |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
@@ -123,9 +125,17 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 - **降级**：预载是优化不是依赖——任何失败（未订阅、下载失败、场景异常、改图）
   自动回退现有标准加载路径，行为与未开预载完全一致；服务端不支持
   `pick_announced` 时插件完全闲置（WS 连接会带 `cap=preload1` 能力参数，旧服务端忽略）。
+- **链式预载（`Features.EnableChainedPreload`）**：进入某一关（`PlayingLevel`）后，
+  后台以同样的休眠方式预载合集**下一关**（低优先级分帧加载），过关时直接换入——
+  关间过渡从数秒加载变为帧级切换，计时器边沿/上报不受影响。相邻同关
+  （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
+  预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
+  已知取舍：预载完成到换关前，玩家等动态物体会被下一关光照探针轻微染色
+  （换关即恢复）；已知问题与修复路线见 `ignored/M3遗留问题调查-反编译实证.md`。
 - **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
-- 调试：`twi preload hold/swap/drop/status` 可在不连服务端的情况下手工验证
-  驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用）。
+- 调试：`twi preload hold/swap/drop/status/rs` 可在不连服务端的情况下手工验证
+  驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap
+  即 M3 链式换入的最小复现，如 `twi preload hold Siege` 后换入验证投石机）。
 
 > 完整设计见 `ignored/激进预载held-scene方案调研.md`；服务端侧（`pick_announced`
 > 提前下发 + 预载门控）见 `ignored/需求-合集提前下发与预载门控.md`（后端实现后生效）。

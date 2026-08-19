@@ -13,7 +13,7 @@ using UnityEngine.SceneManagement;
 namespace TwilightCore.Preload;
 
 /// <summary>
-/// Held-scene preloader (激进预载held-scene方案调研.md §3, M1+M2): during PREP,
+/// Held-scene preloader (激进预载held-scene方案调研.md §3, M1+M2+M3): during PREP,
 /// after this player's <c>!ready</c> and once the referee's <c>pick_announced</c>
 /// carries a MULTI collection, the first level's scene is loaded ADDITIVELY and
 /// put to sleep (all root objects deactivated). At <c>round_start</c>,
@@ -21,10 +21,20 @@ namespace TwilightCore.Preload;
 /// <see cref="SwapInSequence"/> instead of the standard launch — the countdown
 /// ends with the player already in the level.
 ///
+/// <para>M3 chaining (<see cref="TwilightConfig.EnableChainedPreload"/>): while a
+/// collection run is in <c>PlayingLevel</c>, <see cref="Update"/> idempotently
+/// holds the NEXT level dormant the same way; the level advance reuses the same
+/// <c>LaunchLevel → TrySwapIn</c> path. Chained holds never report to the server
+/// (<c>preload_report</c> belongs to the round-start gate only), adjacent same
+/// levels never preload (the Empty-dwell transition owns them), and the driver
+/// self-heals: any hold destroyed by an external Single load is simply re-held
+/// on a later frame once the gates pass again.</para>
+///
 /// <para>SINGLE picks never preload (report <c>na</c>); preloading is an
 /// optimisation, never a correctness dependency — any failure falls back to the
 /// standard launch path, and without a server <c>pick_announced</c> this manager
-/// stays completely idle.</para>
+/// stays completely idle (the chained driver only needs a local collection run,
+/// no server required).</para>
 ///
 /// <para>All entry points (<see cref="OnPickAnnounced"/>,
 /// <see cref="OnReadyOrPhaseChanged"/>) are pushed from
@@ -41,6 +51,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private HeldScene _held;
     private HeldScene _lastConsumed;   // status display only
     private Coroutine _pipeline;
+
+    // True while a swap-in coroutine is mid-flight (up to and including its
+    // trailing outgoing-scene unload). The chained driver waits it out rather
+    // than starting an additive load under a scene teardown.
+    private bool _swapRunning;
 
     // Scene-load plumbing: the sceneLoaded hook captures + dormifies the scene
     // (before it ever renders); the pipeline makes the keep/discard decision
@@ -235,14 +250,87 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             && (s.Phase == MatchPhase.Prep || s.Phase == MatchPhase.Countdown);
     }
 
+    /// <summary>
+    /// Still meaningful to finish THIS hold? Match-driven holds live inside the
+    /// PREP/COUNTDOWN window; chained holds live while the run is playing a
+    /// level and still expects exactly this level next; debug holds only die
+    /// by explicit drop.
+    /// </summary>
+    private static bool HoldStillWanted(HeldScene held)
+    {
+        if (held.Chained)
+        {
+            var mgr = CollectionManager.Instance;
+            var game = Game.instance;
+            if (mgr == null || !mgr.IsInCollectionRun) return false;
+            if (game == null || game.state != GameState.PlayingLevel) return false;
+            string next = mgr.NextLevelId;
+            return next != null && string.Equals(
+                CollectionManager.CanonicalizeLevelId(next), held.LevelId, StringComparison.Ordinal);
+        }
+        if (!held.MatchDriven) return true;
+        return PreloadStillWanted();
+    }
+
+    // ── M3 chained driver ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Idempotent chained-preload driver: while a collection run is playing a
+    /// level, hold the NEXT level dormant so the advance swaps it in. Runs every
+    /// frame; every guard is re-checked so the chain self-heals after
+    /// standard-path fallbacks, skips, restarts or any external load that
+    /// destroyed the hold. Adjacent same levels never preload — the
+    /// SameLevelTransition Empty-dwell path owns them (its Single 'Empty' load
+    /// would destroy the hold anyway).
+    /// </summary>
+    private void Update()
+    {
+        if (!TwilightConfig.EnableChainedPreload.Value) return;
+        if (!EnableScenePreloadOn) return;
+        if (_pipeline != null || _dropRequested) return;
+        if (_swapRunning) return;   // a swap is mid-flight (incl. its trailing unload) — don't start a load under it
+
+        // Don't race an outgoing-scene unload from a previous swap/drop — let
+        // it finish first (same-name load/unload racing on Unity 2017 is flaky,
+        // and mixed same-frame ops warn).
+        if (_lastUnloadOp != null && !_lastUnloadOp.isDone) return;
+
+        var mgr = CollectionManager.Instance;
+        if (mgr == null || !mgr.IsInCollectionRun) return;
+        var game = Game.instance;
+        if (game == null || game.state != GameState.PlayingLevel) return;
+
+        string next = mgr.NextLevelId;
+        if (string.IsNullOrEmpty(next)) return;   // last level of the run
+        next = CollectionManager.CanonicalizeLevelId(next);
+        string current = CollectionManager.CanonicalizeLevelId(mgr.CurrentLevelId);
+        if (string.Equals(next, current, StringComparison.Ordinal)) return;   // adjacent same level: Empty-dwell owns it
+
+        if (IsHeldDormant)
+        {
+            if (string.Equals(_held.LevelId, next, StringComparison.Ordinal)) return;   // already holding the right scene
+            // The run's next level moved under us (lc skip / restart / server
+            // restart) — drop the stale hold; next frame re-holds.
+            ForceDrop("chained: next level changed");
+            return;
+        }
+        if (_held != null) return;   // non-dormant hold in flight (pipeline guard above covers its coroutine)
+
+        Plugin.Logger.LogInfo($"[Preload] chained hold: '{next}' (next of '{mgr.CurrentLevelId}', level {mgr.CurrentLevelIndex + 1}/{mgr.CurrentCollection.Levels.Count}).");
+        _pipeline = StartCoroutine(PreloadPipeline(next, matchDriven: false, chained: true));
+    }
+
+    private static bool EnableScenePreloadOn => TwilightConfig.EnableScenePreload.Value;
+
     // ── P-phase pipeline (调研 §3.1) ─────────────────────────────────────────
 
     /// <summary>
     /// Serial preload: resolve type/scene name → (workshop) ensure downloaded →
-    /// additive scene load → dormify. <seealso cref="LevelRepository"/> has
-    /// single-slot Steam callbacks, so at most one pipeline may ever run.
+    /// additive scene load → dormify (+ lighting freeze &amp; RS probe).
+    /// <seealso cref="LevelRepository"/> has single-slot Steam callbacks, so at
+    /// most one pipeline may ever run.
     /// </summary>
-    private IEnumerator PreloadPipeline(string levelId, bool matchDriven)
+    private IEnumerator PreloadPipeline(string levelId, bool matchDriven, bool chained = false)
     {
         // The in-game console lowercases its whole input line (Shell.cs:102) —
         // canonicalise (case-insensitive built-in/editor-pick match) before any
@@ -254,7 +342,8 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             yield break;
         }
 
-        var held = new HeldScene { LevelId = levelId, MatchDriven = matchDriven };
+        var held = new HeldScene { LevelId = levelId, MatchDriven = matchDriven, Chained = chained };
+        held.PreserveLevel = Game.currentLevel;   // the dormant Level's OnEnable hijacks currentLevel at load; restore this (null at the menu)
         _held = held;
         _doneReported = false;
         _dropRequested = false;
@@ -355,14 +444,23 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             fail = "unsupported level type: " + held.Type;
         }
 
-        if (fail != null || _dropRequested || (matchDriven && !PreloadStillWanted()))
+        if (fail != null || _dropRequested || !HoldStillWanted(held))
         {
-            FailPipeline(held, fail ?? (_dropRequested ? "dropped during resolve" : "round started during resolve"));
+            FailPipeline(held, fail ?? (_dropRequested ? "dropped during resolve" : "hold no longer wanted during resolve"));
             yield break;
         }
 
         held.Metadata = meta;
         held.SceneName = sceneName;
+
+        // ── capture the global lighting state BEFORE the load ──
+        // The additive load switches lightProbes / lightmapsMode to the new
+        // scene's (and the RS probe below needs the pre-load baseline). The
+        // lightmap TABLE itself is engine-managed — never touched.
+        held.PreLoadProbes = LightmapSettings.lightProbes;
+        held.PreLoadRS = HeldScene.RenderSettingsSnapshot.Capture();
+        held.PreLoadLMMode = LightmapSettings.lightmapsMode;
+        held.PreLoadLMCount = LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0;
 
         // ── additive scene load (the heavy part the player would otherwise
         //    wait for after round_start) ──
@@ -412,16 +510,65 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             yield break;
         }
 
-        if (_dropRequested || (matchDriven && !PreloadStillWanted()))
+        if (_dropRequested || !HoldStillWanted(held))
         {
-            // Round already started (gate timeout / force start) or the hold was
-            // dropped — discard the dormant scene (unloads it; no report — the
-            // server cleared preload states when the round began / pick changed).
-            DiscardLoadedScene(held, _dropRequested ? "dropped during scene load" : "round started during scene load");
+            // Round already started (gate timeout / force start), the hold was
+            // dropped, or the chained next level moved — discard the dormant
+            // scene (unloads it; no report — the server cleared preload states
+            // when the round began / pick changed; chained holds never report).
+            DiscardLoadedScene(held, _dropRequested ? "dropped during scene load" : "hold no longer wanted after scene load");
             yield break;
         }
 
-        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}");
+        // ── lighting freeze (post-load, before render) ──
+        // Diagnostics so far: this Unity's additive load does NOT apply the
+        // loaded scene's RenderSettings — but lightmapsMode/lightProbes may
+        // still flip, which re-decodes the playing scene's lightmaps
+        // (everything dark). Freeze the post-load state for the swap-in,
+        // restore the playing scene's.
+        var probesAfterLoad = LightmapSettings.lightProbes;
+        var modeAfterLoad = LightmapSettings.lightmapsMode;
+        int lmCountAfter = LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0;
+
+        LightmapSettings.lightmapsMode = held.PreLoadLMMode;   // decode mode back to the playing scene's
+        held.PreLoadRS.Apply();
+        held.SceneRS = held.PreLoadRS;   // degraded default — the probe overwrites on success
+        // NOTE: lightProbes is deliberately NOT touched. Manual assignment of
+        // LightmapSettings.lightProbes breaks dynamic-object sampling (the
+        // "player goes dark" regression) — the switch is engine-owned and
+        // stays that way (known accepted cosmetic: the tinting during the
+        // hold window; see ignored/M3遗留问题调查-反编译实证.md §1/§2).
+        Plugin.Logger.LogInfo(
+            $"[Preload] lighting freeze for '{held.SceneName}': lmCount {held.PreLoadLMCount}->{lmCountAfter}, mode {held.PreLoadLMMode}->{modeAfterLoad}{(held.PreLoadLMMode == modeAfterLoad ? "" : " (FLIPPED — restored)")}, " +
+            $"probes {(held.PreLoadProbes == null ? "null" : held.PreLoadProbes.GetInstanceID().ToString())}->{(probesAfterLoad == null ? "null" : probesAfterLoad.GetInstanceID().ToString())}{(Equals(held.PreLoadProbes, probesAfterLoad) ? "" : " (engine-switched — left alone)")}");
+
+        // ── RS probe: learn the held scene's OWN RenderSettings ──
+        // The engine never applies them for an additive load — but activation
+        // does, eventually (sync, or by the next frame's integration point).
+        // Briefly activate the held scene (roots stay dormant, nothing renders
+        // from it), capture what the engine applies, then restore. The swap-in
+        // re-applies the captured values so Level.OnEnable adopts the scene's
+        // OWN fog instead of the outgoing level's leftovers.
+        //
+        // CaveRender is SUPPRESSED for the probe frames: it rewrites the
+        // global fog from the playing level every OnPreCull, so an unsuppressed
+        // post-frame capture would store the PLAYING level's fog as the held
+        // scene's — and if the player happens to be underwater at that moment
+        // (the hold can start/retry at any time during play), the swap would
+        // permanently latch UNDERWATER fog into the next level (调查 §3.2
+        // 锁存 B).
+        yield return StartCoroutine(RsProbe(held));
+
+        // Final drop/wanted check — the freeze+probe crossed frames, during
+        // which a drop may have arrived (pick change / phase left PREP / the
+        // chained next level moved).
+        if (_dropRequested || !HoldStillWanted(held))
+        {
+            DiscardLoadedScene(held, _dropRequested ? "dropped during lighting freeze/probe" : "hold no longer wanted after probe");
+            yield break;
+        }
+
+        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}; probedRS={held.SceneRS.Describe()}");
         TwilightLog.Print($"[Preload] '{levelId}' held dormant (scene '{held.SceneName}', {held.Roots.Length} roots) — twi preload swap");
         if (matchDriven)
         {
@@ -429,6 +576,75 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             _doneReported = true;
         }
         PipelineExited();
+    }
+
+    /// <summary>
+    /// One-frame RS probe of the held scene (see the pipeline). Runs as a
+    /// coroutine so it can cross exactly one frame; restores the previous
+    /// active scene, lightmapsMode and RenderSettings before returning. Never
+    /// throws — a failed probe leaves <c>held.SceneRS</c> at its degraded
+    /// default (the pre-load values) and logs a warning.
+    /// </summary>
+    private IEnumerator RsProbe(HeldScene held)
+    {
+        var probePrevActive = SceneManager.GetActiveScene();
+
+        // Suppress every CaveRender for the probe window (one frame): the
+        // camera just keeps the previous frame — invisible — but nothing
+        // overwrites the fog the engine applies for the activated held scene.
+        var caveRenders = UnityEngine.Object.FindObjectsOfType<CaveRender>();
+        var caveWasEnabled = new bool[caveRenders.Length];
+        for (int i = 0; i < caveRenders.Length; i++)
+        {
+            caveWasEnabled[i] = caveRenders[i].enabled;
+            if (caveWasEnabled[i]) caveRenders[i].enabled = false;
+        }
+
+        var preRS = held.PreLoadRS;
+        var syncRS = preRS;
+        bool activated = false;
+        try
+        {
+            preRS = HeldScene.RenderSettingsSnapshot.Capture();
+            SceneManager.SetActiveScene(held.Scene);
+            activated = true;
+            syncRS = HeldScene.RenderSettingsSnapshot.Capture();   // applied synchronously?
+        }
+        catch (Exception e)
+        {
+            Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' failed (activation): {e.Message} — using pre-load values.");
+        }
+        yield return null;   // one frame for the engine's integration to apply the scene's stored RS
+        try
+        {
+            if (activated)
+            {
+                var postRS = HeldScene.RenderSettingsSnapshot.Capture();   // applied by this frame's integration?
+                held.SceneRS = syncRS.Equals(preRS) ? postRS : syncRS;      // whichever one the engine actually applied
+                held.SceneLMMode = LightmapSettings.lightmapsMode;
+                Plugin.Logger.LogInfo(
+                    $"[Preload] RS probe '{held.SceneName}': {(syncRS.Equals(preRS) ? "post-frame" : "sync")} applied, rs={held.SceneRS.Describe()}; probesAcrossActivation={(Equals(LightmapSettings.lightProbes, held.PreLoadProbes) ? "unchanged" : "SWITCHED (left engine-owned)")}");
+            }
+        }
+        catch (Exception e)
+        {
+            Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' failed (capture): {e.Message} — using pre-load values.");
+        }
+        finally
+        {
+            try
+            {
+                SceneManager.SetActiveScene(probePrevActive);
+                LightmapSettings.lightmapsMode = held.PreLoadLMMode;
+                held.PreLoadRS.Apply();
+            }
+            catch (Exception e)
+            {
+                Plugin.Logger.LogWarning($"[Preload] RS probe '{held.SceneName}' restore failed: {e.Message}");
+            }
+            for (int i = 0; i < caveRenders.Length; i++)
+                if (caveWasEnabled[i] && caveRenders[i] != null) caveRenders[i].enabled = true;
+        }
     }
 
     /// <summary>Capture + dormify our additive load; unrelated loads re-run the gates.</summary>
@@ -510,7 +726,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             return;
         }
 
-        if (Game.currentLevel == held.Level) Game.currentLevel = null;
+        // Undo the Game.currentLevel registration the dormant Level's OnEnable
+        // performed at load integration: restore what was current when the
+        // pipeline started (null at the menu / M2, the level being played for
+        // M3 chained holds). The swap-in re-registers via Game.LevelLoaded.
+        if (Game.currentLevel == held.Level) Game.currentLevel = held.PreserveLevel;
 
         held.State = HeldSceneState.Dormant;
     }
@@ -614,8 +834,27 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _lastConsumed = held;
         held.State = HeldSceneState.Consumed;
         Plugin.Logger.LogInfo($"[Preload] swap-in: '{levelId}' (scene '{held.SceneName}')");
-        StartCoroutine(SwapInSequence.Run(held, OnSwapInFallback));
+        _swapRunning = true;
+        StartCoroutine(SwapRunner(held));
         return true;
+    }
+
+    /// <summary>Drives the swap coroutine and clears the in-flight flag (also on fallback). The chained driver waits the flag out.</summary>
+    private IEnumerator SwapRunner(HeldScene held)
+    {
+        yield return SwapInSequence.Run(held, OnSwapInFallback, OnOutgoingUnload);
+        _swapRunning = false;
+    }
+
+    /// <summary>
+    /// The swap sequence unloads the outgoing scene (last step); track that op
+    /// so the chained driver doesn't race a new additive load against it and a
+    /// same-name reload waits it out first.
+    /// </summary>
+    private void OnOutgoingUnload(AsyncOperation op, string sceneName)
+    {
+        _lastUnloadOp = op;
+        _lastUnloadName = sceneName;
     }
 
     /// <summary>
@@ -636,7 +875,12 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
     // ── Debug / M1 entry points (`twi preload …`) ────────────────────────────
 
-    /// <summary>M1 prototype: hold an arbitrary level, bypassing the match gates.</summary>
+    /// <summary>
+    /// M1/M3 prototype: hold an arbitrary level, bypassing the match gates.
+    /// From the menu this exercises the M2 round-start swap; from inside a
+    /// level (PlayingLevel) it exercises the M3 chained swap — hold the next
+    /// level, then `twi preload swap` and check the level's machines.
+    /// </summary>
     public void DebugHold(string levelId)
     {
         if (string.IsNullOrEmpty(levelId)) return;
@@ -645,9 +889,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             Plugin.Logger.LogWarning("[Preload] EnableScenePreload is off — nothing to do.");
             return;
         }
-        if (App.state != AppSate.Menu)
+        bool inLevel = App.state == AppSate.PlayLevel && Game.instance != null
+            && Game.instance.state == GameState.PlayingLevel;
+        if (App.state != AppSate.Menu && !inLevel)
         {
-            Plugin.Logger.LogWarning("[Preload] debug hold must run from the main menu.");
+            Plugin.Logger.LogWarning("[Preload] debug hold must run from the main menu or inside a playing level.");
             return;
         }
         if (_pipeline != null)
@@ -672,6 +918,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             Plugin.Logger.LogWarning("[Preload] ready-lock is active — the standard-launch fallback would be blocked. Un-ready first.");
             return;
         }
+        if (_swapRunning)
+        {
+            Plugin.Logger.LogWarning("[Preload] a swap is already in flight.");
+            return;
+        }
         var held = _held;
         if (held == null || held.State != HeldSceneState.Dormant)
         {
@@ -694,6 +945,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         if (held != null)
         {
             sb.Append($"\nheld: '{held.LevelId}' state={held.State} type={held.Type} scene='{held.SceneName ?? "-"}'");
+            if (held.Chained) sb.Append(" chained");
             if (held.Scene.IsValid()) sb.Append($" roots={held.Roots.Length}");
             if (held.Bundle != null) sb.Append(" bundle=yes");
             if (!string.IsNullOrEmpty(held.FailDetail)) sb.Append($" detail='{held.FailDetail}'");
@@ -702,6 +954,40 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         if (_lastConsumed != null)
             sb.Append($"\nlastConsumed: '{_lastConsumed.LevelId}' scene='{_lastConsumed.SceneName}'");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// On-demand machine-state dump (`twi preload mach`) — run it the moment a
+    /// machine is OBSERVED broken in-game; the dump shows the live joint
+    /// angles/drives/sleep state of every machine component in the level.
+    /// </summary>
+    public void DumpMachines()
+    {
+        try { MachineDiagnostics.DumpCurrentLevel("manual"); }
+        catch (Exception ex) { Plugin.Logger.LogWarning("[Preload] machine dump failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// Dump the live global lighting state for real-machine diagnosis
+    /// (`twi preload rs`) — probe-set id, ambient, fog, lightmap table. Copy
+    /// into bug reports alongside the pipeline's lighting-freeze / RS-probe
+    /// log lines.
+    /// </summary>
+    public string RenderStateString()
+    {
+        var sb = new StringBuilder();
+        Scene active = SceneManager.GetActiveScene();
+        sb.Append($"activeScene='{active.name}' lmCount={(LightmapSettings.lightmaps != null ? LightmapSettings.lightmaps.Length : 0)} lmMode={LightmapSettings.lightmapsMode}");
+        var probes = LightmapSettings.lightProbes;
+        sb.Append($"\nprobes: {(probes != null ? probes.GetInstanceID() + " '" + probes.name + "'" : "null")}");
+        sb.Append($"\nambient: mode={RenderSettings.ambientMode} light={RenderSettings.ambientLight} intensity={RenderSettings.ambientIntensity:0.###}");
+        sb.Append($"\nfog: {RenderSettings.fog}/{RenderSettings.fogColor}/d={RenderSettings.fogDensity:0.####}/{RenderSettings.fogMode} (multiplier={CaveRender.fogDensityMultiplier:0.##})");
+        sb.Append($"\nsun={(RenderSettings.sun != null ? RenderSettings.sun.name : "none")} skybox={(RenderSettings.skybox != null ? RenderSettings.skybox.name : "none")}");
+        sb.Append($"\ncurrentLevel={(Game.currentLevel != null ? Game.currentLevel.name + " fog=" + Game.currentLevel.fogColor + "/d=" + Game.currentLevel.fogDensity : "null")}");
+        var held = _held;
+        if (held != null && held.Scene.IsValid())
+            sb.Append($"\nheld[{held.State}]: probedRS={held.SceneRS.Describe()}");
         return sb.ToString();
     }
 

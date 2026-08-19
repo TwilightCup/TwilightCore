@@ -87,6 +87,22 @@ public class CollectionManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// The LevelId that comes after the current one, or null on the last level
+    /// / no active run. Consumed by the chained-preload driver (M3).
+    /// </summary>
+    public string NextLevelId
+    {
+        get
+        {
+            var col = CurrentCollection;
+            if (col == null || col.Levels == null) return null;
+            int next = CurrentLevelIndex + 1;
+            if (next < 0 || next >= col.Levels.Count) return null;
+            return col.Levels[next];
+        }
+    }
+
     // ── Run lifecycle events (consumed by the timer / round reporter) ──────────
     //
     // Fired by the collection engine so an external module (the simulated timer

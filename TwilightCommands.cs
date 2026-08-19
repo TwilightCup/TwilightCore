@@ -186,12 +186,12 @@ internal static class TwilightCommands
     {
         var pre = Preload.ScenePreloadManager.Instance;
         if (pre == null) { TwilightLog.Print("twi preload: preloader not initialised."); return; }
-        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status>"); return; }
+        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach>"); return; }
 
         switch (parts[1].ToLowerInvariant())
         {
             case "hold":
-                if (parts.Length < 3) TwilightLog.Print("twi preload hold <levelId>   (e.g. Aztec or a workshop id)");
+                if (parts.Length < 3) TwilightLog.Print("twi preload hold <levelId>   (e.g. Aztec or a workshop id; menu or in-level)");
                 else pre.DebugHold(parts[2]);
                 return;
             case "swap":
@@ -204,8 +204,19 @@ internal static class TwilightCommands
             case "status":
                 TwilightLog.Print(pre.StatusString());
                 return;
+            case "rs":
+            {
+                string dump = pre.RenderStateString();
+                TwilightLog.Print(dump);
+                Plugin.Logger.LogInfo("[Preload] rs dump:\n" + dump);   // into LogOutput.log for easy copying
+                return;
+            }
+            case "mach":
+                pre.DumpMachines();
+                TwilightLog.Print("twi preload: machine state dumped to LogOutput.log.");
+                return;
             default:
-                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status>");
+                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach>");
                 return;
         }
     }

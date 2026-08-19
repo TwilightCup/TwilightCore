@@ -55,6 +55,14 @@ internal static class TwilightConfig
     /// back to the standard load path.
     /// </summary>
     public static ConfigEntry<bool> EnableScenePreload;
+    /// <summary>
+    /// M3 chained preload: while a collection run is playing a level, additively
+    /// preload the NEXT level in the background (dormant, low priority) and swap
+    /// it in at level advance — frame-level transitions instead of multi-second
+    /// loads. Adjacent same levels never preload (existing Empty-dwell path).
+    /// Disable if the in-round loading hurts framerate on target hardware.
+    /// </summary>
+    public static ConfigEntry<bool> EnableChainedPreload;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -102,6 +110,10 @@ internal static class TwilightConfig
         EnableScenePreload = config.Bind("Features", "EnableScenePreload", true,
             "Held-scene preload of the announced MULTI pick's first level during PREP (additive, dormant); " +
             "round_start swaps it in instead of loading. Requires server-side pick_announced; SINGLE picks never preload.");
+        EnableChainedPreload = config.Bind("Features", "EnableChainedPreload", true,
+            "M3 chained preload: while playing a collection level, preload the NEXT level additively (dormant, " +
+            "low priority) and swap it in at level advance (frame-level transitions). Works for local lc runs too; " +
+            "adjacent same levels never preload (Empty-dwell path). Disable if in-round loading hurts framerate.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");
