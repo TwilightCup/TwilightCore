@@ -62,7 +62,9 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 
 | 命令 | 说明 |
 |---|---|
-| `twi connect <host> [port]` / `twi disconnect` | 连接（地址在命令里给，默认端口 8443，默认走 `wss`/`https`）/ 断开（进度回显到控制台） |
+| `twi connect <host> [port]` | 连接（地址在命令里给，默认端口 8443，默认走 `wss`/`https`） |
+| `twi disconnect` | 主动断开（停止自动重连） |
+| `twi disconnect simulate` | 模拟意外断连：连接会按配置自动重连，用于验证断线重连续传 |
 | `twi status` | 连接 / 比赛状态 |
 | `twi reload` | 从磁盘热重载 `TwilightCore.cfg` + `LevelCollections.json`（改完配置文件不用重启游戏） |
 | `twi sim level_done [ms]` | 模拟当前关/尝试完成（可指定用时） |
@@ -114,4 +116,6 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 - **真实计时器**：未实现（本期用 `SimulatedTimer` 占位）。
 - **重连重载合集**：回合中断线重连只补传双方状态快照，不会重新下发/加载合集配置
   （服务端 `reconnect_resync` 不含 pick/collection）；游戏崩溃后需手动重进。
+  同一进程内的临时断连不会停止计时器，断线期间产生的上报会缓存并在重连后补发
+  （`twi disconnect simulate` 可模拟该路径）。
 - **聊天**：独立的 OnGUI 控制台（Ctrl+T），不依赖游戏内置 `NetChat`（后者在单人/菜单下被游戏锁死）。打开时仅抑制抓取/跳跃输入，**移动键（WASD）仍会生效**——停步后再打字；如需完全屏蔽移动，后续可在控制台打开时挂 `HumanControls` 补丁。

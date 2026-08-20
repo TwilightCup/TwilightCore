@@ -78,6 +78,20 @@ namespace TwilightCore.Timer
     }
 
     /// <summary>
+    /// 可选扩展（断线重连恢复）：<see cref="ITimerProvider"/> 实现本接口即声明
+    /// 支持在不重置既有回合数据的前提下重新激活计时。旧版提供方不实现该接口
+    /// 仍可工作（重连恢复退化为重置，见 ProviderRoundReporter）。
+    /// </summary>
+    public interface IResumableTimerProvider
+    {
+        /// <summary>
+        /// 恢复同一回合的计时：不得清空已完成分段/累计时长/有效尝试数；若当前
+        /// 已处于分段中，恢复计时累加。roundId 与既有回合不一致时实现方忽略。
+        /// </summary>
+        void ResumeRound(string roundId, RoundPickInfo pick);
+    }
+
+    /// <summary>
     /// 静态注册入口。后注册者胜；卸载时注销。线程安全。
     /// <c>Register(null)</c> 无操作。计时器插件在自身加载完成后注册、卸载前注销；
     /// TwilightCore 在每个回合开始时读取 <see cref="Current"/>（注册晚于

@@ -10,7 +10,8 @@ namespace TwilightCore;
 /// The <c>twi</c> developer-console command group (open with BackQuote/F1).
 ///
 ///   twi connect &lt;host&gt; [port]    — log in &amp; connect to the server (host/port on the command line, not the cfg)
-///   twi disconnect              — close the connection
+///   twi disconnect              — close the connection (no reconnect)
+///   twi disconnect simulate     — simulate an unexpected drop (auto-reconnect follows)
 ///   twi status                  — show connection / match state
 ///   twi reload                  — hot-reload TwilightCore.cfg + LevelCollections.json from disk
 ///   twi finish                  — end the current round (project_complete; same as chat !finish)
@@ -36,7 +37,8 @@ internal static class TwilightCommands
     private const string HelpText =
         "twi <command> [args]\r\n" +
         "\tconnect <host> [port] - log in & connect (host/port given here, not in the cfg)\r\n" +
-        "\tdisconnect - close the connection\r\n" +
+        "\tdisconnect - close the connection (no reconnect)\r\n" +
+        "\tdisconnect simulate - simulate an unexpected drop (auto-reconnect follows)\r\n" +
         "\tstatus - show connection / match state\r\n" +
         "\treload - hot-reload TwilightCore.cfg + LevelCollections.json from disk\r\n" +
         "\tfinish - end the current round (same as chat !finish)\r\n" +
@@ -71,6 +73,11 @@ internal static class TwilightCommands
                 return;
             case "disconnect":
                 if (_client == null) return;
+                if (parts.Length > 1 && parts[1].ToLowerInvariant() == "simulate")
+                {
+                    _client.SimulateDisconnect();
+                    return;
+                }
                 _client.Stop();
                 TwilightLog.Print("twi: disconnected.");
                 return;

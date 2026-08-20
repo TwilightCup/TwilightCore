@@ -153,9 +153,22 @@ internal sealed class MatchController
         // locked; PREP and not ready → free to practise.
         UpdateMatchModeFromSession();
 
-        // Reconnect mid-round: ask the server for the authoritative snapshot.
+        // Reconnect mid-round: a transient network drop keeps the reporter
+        // running locally (see OnDisconnected), so the timer data collected
+        // while offline is still intact. If some path did stop it (e.g. an
+        // auth_error after a previous reconnect attempt), re-activate it
+        // without resetting its completed segments.
         if (_session.Phase == MatchPhase.InRound && !string.IsNullOrEmpty(_session.RoundId))
         {
+            if (!Reporter.IsActive && _session.Pick != null)
+            {
+                Reporter.ResumeRound(_session.RoundId, _session.Pick);
+                Plugin.Logger.LogInfo($"[Twilight] resumed round reporter for {_session.RoundId} after reconnect.");
+            }
+
+            // Ask the server for the authoritative snapshot (own + opponent);
+            // buffered reports were flushed by TwilightClient before this
+            // callback, so the snapshot already reflects the backfill.
             _client.Send(new Dictionary<string, object>
             {
                 { "type", Msg.ReconnectResync },
@@ -164,13 +177,23 @@ internal sealed class MatchController
         }
     }
 
-    private void OnDisconnected(string reason)
+    private void OnDisconnected(string reason, bool willReconnect)
     {
         _session.IsAuthenticated = false;
-        Reporter.Stop();
-        SetMatchMode(false); // out of the match — player's local setup restored (T2.4)
+
+        // A transient disconnect is NOT a round end: keep the reporter active
+        // and stay in match mode so timing continues and in-round constraints
+        // (no reset/retry keys) remain enforced while the socket is down.
+        // Terminal disconnects (auth_error / explicit Stop / match end) still
+        // stop the timer and restore the player's local setup.
+        if (!willReconnect)
+        {
+            Reporter.Stop();
+            SetMatchMode(false); // out of the match — player's local setup restored (T2.4)
+        }
+
         if (!string.IsNullOrEmpty(reason))
-            _chat.ShowInfo("[Twilight] Disconnected: " + reason + " (will reconnect automatically)");
+            _chat.ShowInfo("[Twilight] Disconnected: " + reason + (willReconnect ? " (will reconnect automatically)" : ""));
     }
 
     // ── Inbound dispatch ───────────────────────────────────────────

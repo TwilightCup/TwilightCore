@@ -67,6 +67,22 @@ internal sealed class WebSocketClient : IDisposable
         State = ConnState.Closed;
     }
 
+    /// <summary>
+    /// Debug/testing hook (<c>twi disconnect simulate</c>): tear the transport
+    /// down WITHOUT setting <c>_closing</c>, so the receive thread's finally
+    /// reports it as an unexpected disconnect and <see cref="OnClosed"/> fires.
+    /// </summary>
+    public void SimulateUnexpectedDrop()
+    {
+        if (State == ConnState.Disconnected || State == ConnState.Closed) return;
+        // Flip state first so TwilightClient.Send() immediately treats the
+        // socket as down (queues replayable reports); the receive thread's
+        // finally still sees _closing == false and raises OnClosed.
+        State = ConnState.Closed;
+        Plugin.Logger.LogInfo("[WS] simulated unexpected transport drop.");
+        lock (_sendLock) CleanupStreams();
+    }
+
     public void Dispose()
     {
         _closing = true;

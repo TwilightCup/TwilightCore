@@ -74,6 +74,28 @@ internal sealed class SimulatedTimer : IRoundReporter
         Plugin.Logger.LogInfo("[SimTimer] stopped.");
     }
 
+    public void ResumeRound(string roundId, PickSnapshot pick)
+    {
+        if (_active) return;
+        if (string.IsNullOrEmpty(roundId) || pick == null) return;
+        if (!string.IsNullOrEmpty(_roundId) && _roundId != roundId)
+        {
+            Plugin.Logger.LogWarning($"[SimTimer] resume ignored — stored round {_roundId} != {roundId}.");
+            return;
+        }
+        EnsureWired();
+        _roundId = roundId;
+        _pick = pick;
+        _isSingle = pick.Type == PickType.Single;
+        _attemptTotal = pick.RetryCount;
+        _active = true;
+        // Deliberately keep _accumulatedMs/_validAttempts/_attemptDone and the
+        // current level's stopwatch start: the simulated stopwatch treats the
+        // outage as elapsed time, matching the real timer's uninterrupted
+        // in-game clock while RoundTracker stays active.
+        Plugin.Logger.LogInfo($"[SimTimer] round {roundId} resumed (accumulated={_accumulatedMs}ms).");
+    }
+
     public void FinishRound()
     {
         if (!_active || string.IsNullOrEmpty(_roundId)) return;

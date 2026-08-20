@@ -76,6 +76,47 @@ namespace TwilightCore.Timer
             Plugin.Logger.LogInfo("[Timer] round stopped.");
         }
 
+        public void ResumeRound(string roundId, PickSnapshot pick)
+        {
+            if (_active) return;
+            if (string.IsNullOrEmpty(roundId) || pick == null) return;
+            if (!string.IsNullOrEmpty(_roundId) && _roundId != roundId)
+            {
+                Plugin.Logger.LogWarning($"[Timer] resume ignored — stored round {_roundId} != {roundId}.");
+                return;
+            }
+
+            _roundId = roundId;
+            _pick = pick;
+            _isSingle = pick.Type == PickType.Single;
+            _active = true;
+
+            var info = new RoundPickInfo
+            {
+                RoundId = roundId,
+                ProjectType = _isSingle ? RoundProjectType.Single : RoundProjectType.Multi,
+                RetryCount = pick.RetryCount,
+                Tags = pick.TimerTags,
+            };
+
+            var resumable = _provider as IResumableTimerProvider;
+            if (resumable != null)
+            {
+                _provider.SetRoundTags(pick.TimerTags);
+                resumable.ResumeRound(roundId, info);
+                Plugin.Logger.LogInfo($"[Timer] round {roundId} resumed via provider (data preserved).");
+            }
+            else
+            {
+                // Older provider builds cannot re-activate without a full reset.
+                // Accept the reset so later segments at least keep flowing; the
+                // already-completed data would be rebuilt from server snapshots
+                // only if the provider chooses to do so itself.
+                Plugin.Logger.LogWarning("[Timer] provider does not support resume — falling back to StartRound (reset).");
+                StartRound(roundId, pick);
+            }
+        }
+
         public void FinishRound()
         {
             if (!_active || string.IsNullOrEmpty(_roundId)) return;

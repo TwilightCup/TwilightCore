@@ -25,18 +25,27 @@ public class TwilightClient : MonoBehaviour
     public event Action<Dictionary<string, object>> OnAuthenticated;
     /// <summary>Raised when a parsed server message is ready to handle.</summary>
     public event Action<Dictionary<string, object>> OnMessage;
-    /// <summary>Raised on unexpected disconnect (use to drive UI feedback).</summary>
-    public event Action<string> OnDisconnected;
+    /// <summary>Raised on disconnect, carrying the reason and whether this
+    /// client will try to reconnect automatically.</summary>
+    public event Action<string, bool> OnDisconnected;
     /// <summary>Raised when the WS is open but before auth_ok.</summary>
     public event Action OnSocketOpen;
 
     public bool IsConnected => _ws != null && _ws.State == WebSocketClient.ConnState.Connected;
     public bool IsAuthenticated { get; private set; }
 
+    private const int MaxOutboxMessages = 256;
+
     private WebSocketClient _ws;
     private string _token;
     private bool _intentionalStop;
     private int _backoffSecs;
+
+    // Timer/report messages produced while the socket is down. They are
+    // replayed (in order) as soon as the next connection authenticates, so a
+    // transient disconnect does not lose level/attempt/terminal reports.
+    // Server-side upserts are idempotent by level/attempt index.
+    private readonly List<Dictionary<string, object>> _outbox = new List<Dictionary<string, object>>();
 
     // Active connection target — set by StartConnect (from the `twi connect <host> [port]`
     // command-line args, NOT the config file) and reused on reconnect. TLS follows the
@@ -98,6 +107,7 @@ public class TwilightClient : MonoBehaviour
         _targetSet = true;
         _intentionalStop = false;
         _backoffSecs = TwilightConfig.ReconnectMinBackoffSecs.Value;
+        _outbox.Clear(); // a new manual target must never inherit the old target's reports
         StartCoroutine(LoginAndConnect());
         return true;
     }
@@ -106,7 +116,28 @@ public class TwilightClient : MonoBehaviour
     {
         _intentionalStop = true;
         IsAuthenticated = false;
+        _outbox.Clear();
         try { _ws?.Close(); } catch { }
+        // WebSocketClient.Close() deliberately does not raise OnClosed, so the
+        // terminal-disconnect bookkeeping must be driven explicitly here.
+        OnDisconnected?.Invoke("stopped", false);
+    }
+
+    /// <summary>
+    /// Debug/testing hook (<c>twi disconnect simulate</c>): drop the transport
+    /// WITHOUT setting the intentional-stop flag, so the normal unexpected-
+    /// disconnect path (OnDisconnected → backoff reconnect) runs.
+    /// </summary>
+    public void SimulateDisconnect()
+    {
+        if (_ws == null || _ws.State != WebSocketClient.ConnState.Connected)
+        {
+            TwilightLog.Print("[Twilight] simulate disconnect: not connected.");
+            return;
+        }
+        Plugin.Logger.LogInfo("[Twilight] simulating unexpected WebSocket drop (auto-reconnect remains enabled).");
+        TwilightLog.Print("[Twilight] Simulating unexpected disconnect — automatic reconnect will follow.");
+        _ws.SimulateUnexpectedDrop();
     }
 
     // ── Login + connect ─────────────────────────────────────────────
@@ -176,6 +207,10 @@ public class TwilightClient : MonoBehaviour
                 if (string.IsNullOrEmpty(match)) match = msg.GetString("match_id");
                 TwilightLog.Print($"[Twilight] Connected: {msg.GetString("display_name")} ({seat}) — {match}");
                 Plugin.Logger.LogInfo($"[Twilight] authenticated as {seat} match={msg.GetString("match_id")}");
+                // Replay reports buffered during the outage BEFORE MatchController
+                // asks for reconnect_resync: the snapshot then already contains
+                // the backfilled progress.
+                FlushOutbox();
                 OnAuthenticated?.Invoke(msg);
             });
             return;
@@ -188,7 +223,8 @@ public class TwilightClient : MonoBehaviour
                 TwilightLog.Print("[Twilight] Auth failed: " + msg.GetString("msg"));
                 // auth failed (bad token / not assigned) — stop reconnecting to avoid a loop.
                 _intentionalStop = true;
-                OnDisconnected?.Invoke("auth_error: " + msg.GetString("msg"));
+                _outbox.Clear();
+                OnDisconnected?.Invoke("auth_error: " + msg.GetString("msg"), false);
             });
             return;
         }
@@ -201,9 +237,10 @@ public class TwilightClient : MonoBehaviour
         {
             bool wasAuth = IsAuthenticated;
             IsAuthenticated = false;
+            bool willReconnect = !_intentionalStop;
             Plugin.Logger.LogWarning("[Twilight] socket closed" + (string.IsNullOrEmpty(reason) ? "" : ": " + reason));
             TwilightLog.Print("[Twilight] Disconnected" + (string.IsNullOrEmpty(reason) ? "" : ": " + reason));
-            OnDisconnected?.Invoke(reason);
+            OnDisconnected?.Invoke(reason, willReconnect);
             if (wasAuth) ScheduleReconnect();
             else if (!_intentionalStop) ScheduleReconnect();
         });
@@ -250,13 +287,56 @@ public class TwilightClient : MonoBehaviour
 
     // ── Outbound ────────────────────────────────────────────────────
 
-    /// <summary>Serialize (strict) and send a client→server message. No-op if not connected.</summary>
+    /// <summary>Serialize (strict) and send a client→server message. While the
+    /// socket is down, replayable match/timer reports are buffered and flushed
+    /// after the next auth_ok; anything else is dropped.</summary>
     public void Send(Dictionary<string, object> msg)
     {
         if (msg == null) return;
+        string type = msg.GetString("type");
         if (TwilightConfig.VerboseNetLog.Value)
-            Plugin.Logger.LogInfo("[WS→] " + msg.GetString("type"));
-        if (!IsConnected) return;
+            Plugin.Logger.LogInfo("[WS→] " + type);
+        if (!IsConnected)
+        {
+            if (!_intentionalStop && IsReplayable(type))
+            {
+                if (_outbox.Count >= MaxOutboxMessages)
+                {
+                    Plugin.Logger.LogWarning($"[Twilight] outbox full — dropping queued {type}.");
+                    return;
+                }
+                _outbox.Add(msg);
+                Plugin.Logger.LogInfo($"[Twilight] queued {type} while disconnected ({_outbox.Count}/{MaxOutboxMessages}).");
+            }
+            return;
+        }
         _ws.Send(JsonCodec.Serialize(msg));
+    }
+
+    /// <summary>
+    /// Reports that stay meaningful after a reconnect and are safe to replay:
+    /// the server upserts by level/attempt index, and terminal messages are
+    /// idempotent for the same round.
+    /// </summary>
+    private static bool IsReplayable(string type)
+    {
+        return type == Msg.LevelTimeUpload
+            || type == Msg.AttemptSkip
+            || type == Msg.ProjectComplete
+            || type == Msg.ForfeitSignal;
+    }
+
+    private void FlushOutbox()
+    {
+        if (_outbox.Count == 0) return;
+        if (_ws == null || !IsConnected)
+        {
+            Plugin.Logger.LogWarning($"[Twilight] cannot flush {_outbox.Count} queued message(s) — socket not connected.");
+            return;
+        }
+        Plugin.Logger.LogInfo($"[Twilight] flushing {_outbox.Count} queued message(s).");
+        foreach (var msg in _outbox)
+            _ws.Send(JsonCodec.Serialize(msg));
+        _outbox.Clear();
     }
 }
