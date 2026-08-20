@@ -92,6 +92,26 @@ internal static class TwilightConfig
     /// the residue. Adds a short hitch per swap — toggle off to A/B.
     /// </summary>
     public static ConfigEntry<bool> PreloadUnloadUnusedAfterSwap;
+    /// <summary>
+    /// Conservative preload — disk cache warmup: during PREP, after the
+    /// first-level hold completes, a single background thread pre-reads the
+    /// collection's remaining level files into the OS page cache so the
+    /// in-round chained additive loads read from memory instead of disk.
+    /// Pure file IO (no Unity objects, one fixed read buffer, no process-
+    /// memory growth); any failure silently degrades. Hot-reloadable —
+    /// turning it off stops NEW warmups (an active one just finishes).
+    /// </summary>
+    public static ConfigEntry<bool> EnableDiskCacheWarmup;
+    /// <summary>
+    /// Warm the shared asset files alongside the level files — the trios
+    /// adjacent to the warmed scenes' build indices (sharedassets{N}.* ↔
+    /// level{N}; ~600MB for a full collection instead of ~4.1GB for every
+    /// shared file) plus resources.assets. Scene loads fault these in on
+    /// demand, so this closes the remaining I/O. The per-file debug log shows
+    /// the total; toggle off if the machine's RAM headroom is tight (the page
+    /// cache is kernel-reclaimable either way).
+    /// </summary>
+    public static ConfigEntry<bool> DiskWarmupWarmSharedFiles;
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
     public static ConfigEntry<bool> HudEnabled;
@@ -170,6 +190,15 @@ internal static class TwilightConfig
             "After each swap-in, run Resources.UnloadUnusedAssets() and wait it out. The additive preload path " +
             "leaks memory per distinct scene until OOM; the sweep collects the residue. " +
             "Adds a short hitch per swap — toggle off to A/B.");
+        EnableDiskCacheWarmup = config.Bind("Features", "EnableDiskCacheWarmup", true,
+            "Conservative preload: during PREP (after the first-level hold completes), a background thread pre-reads " +
+            "the collection's remaining level files into the OS page cache, so in-round chained loads read from memory " +
+            "instead of disk. Pure file IO — no scene/lighting interaction, no process-memory growth; any failure " +
+            "silently degrades. Hot via `twi reload`: off stops new warmups, an active run finishes.");
+        DiskWarmupWarmSharedFiles = config.Bind("Features", "DiskWarmupWarmSharedFiles", true,
+            "Warm the warmed scenes' adjacent sharedassets{N}.* trios + resources.assets alongside the level files " +
+            "(scene loads fault them in on demand; ~600MB for a full collection vs ~4.1GB for all shared files). " +
+            "Per-file sizes visible in the debug preload log; toggle off on machines with tight RAM headroom.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

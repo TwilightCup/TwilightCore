@@ -113,6 +113,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void OnDestroy()
     {
         if (Instance == this) Instance = null;
+        DiskWarmup.Cancel("preloader destroyed");
         if (_hooked)
         {
             SceneManager.sceneLoaded -= OnSceneLoaded;
@@ -155,6 +156,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         Plugin.Logger.LogInfo($"[Preload] pick_announced: {pick.Code} - {pick.Name} type={pick.Type} first='{first}'");
 
+        // Disk-cache warmup re-arms on every announcement (a changed pick cancels
+        // any run in flight; SINGLE disarms). Placed before the type/feature
+        // branches so every sub-path — including SINGLE and feature-off — updates it.
+        DiskWarmup.OnPickAnnounced(levels, pick.Type == PickType.Multi);
+
         if (pick.Type != PickType.Multi || !TwilightConfig.EnableScenePreload.Value)
         {
             // Scene preloading never applies (SINGLE pick / feature disabled) —
@@ -172,6 +178,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             {
                 Report("done");
                 _doneReported = true;
+                DiskWarmup.MaybeStart();
                 return;
             }
             if (_pipeline != null) return;
@@ -195,6 +202,14 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         if (session.Phase == MatchPhase.Prep && (!session.MyReady || _lastPhase == MatchPhase.Countdown))
             _doneReported = false;
         _lastPhase = session.Phase;
+
+        // The disk-cache warmup cancels INDEPENDENTLY of the held-scene drop
+        // below: at a normal round start TrySwapIn already consumed the hold
+        // (and cancelled the warmup itself) before the phase_change arrives,
+        // so a cancel nested under _held would never fire here.
+        if (session.IsAuthenticated &&
+            session.Phase != MatchPhase.Prep && session.Phase != MatchPhase.Countdown)
+            DiskWarmup.Cancel("phase " + session.Phase);
 
         // Leaving PREP for anything other than COUNTDOWN means any hold is stale
         // (round_start's own flip to InRound doesn't pass through here — it
@@ -242,6 +257,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 Report("done");
                 _doneReported = true;
             }
+            DiskWarmup.MaybeStart();
             return;
         }
 
@@ -790,6 +806,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         {
             Report("done");
             _doneReported = true;
+            // Hold complete → the disk-cache warmup may start (its own gates
+            // re-check everything; a run never competes with this pipeline).
+            DiskWarmup.MaybeStart();
         }
         PipelineExited();
     }
@@ -984,6 +1003,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _lastConsumed = held;
         held.State = HeldSceneState.Consumed;
         Plugin.Logger.LogInfo($"[Preload] swap-in: '{levelId}' (scene '{held.SceneName}')");
+        // The round is starting — stop warming so the load path owns the disk.
+        // (Mid-round chained swap-ins pass through here too; cancel is then a no-op.)
+        DiskWarmup.Cancel("round_start swap-in");
         _swapRunning = true;
         StartCoroutine(SwapRunner(held));
         return true;
@@ -1127,6 +1149,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         if (_lastConsumed != null)
             sb.Append($"\nlastConsumed: '{_lastConsumed.LevelId}' scene='{_lastConsumed.SceneName}'");
+        sb.Append("\n").Append(DiskWarmup.StatusLine());
         return sb.ToString();
     }
 

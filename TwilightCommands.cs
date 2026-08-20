@@ -23,6 +23,9 @@ namespace TwilightCore;
 ///   twi preload hold &lt;levelId&gt;  — M1: additively hold a level's scene dormant (from the main menu)
 ///   twi preload swap            — M1: swap the held scene in (the GO sequence, no match flow)
 ///   twi preload drop            — discard the held scene
+///   twi preload rs              — lightmap/render-state table dump (to LogOutput.log)
+///   twi preload mach            — machine joint-state dump for the current level
+///   twi preload warm &lt;id|all&gt;   — pre-read level files into the OS page cache (debug/A-B)
 ///   twi preload status          — held-scene preloader state
 ///
 /// Connection never happens automatically — run <c>twi connect &lt;host&gt; [port]</c>
@@ -54,6 +57,9 @@ internal static class TwilightCommands
         "\tpreload hold <levelId> - M1: hold a level scene dormant (main menu only)\r\n" +
         "\tpreload swap - M1: swap the held scene in (no match flow)\r\n" +
         "\tpreload drop - discard the held scene\r\n" +
+        "\tpreload rs - dump lightmap/render-state tables to LogOutput.log\r\n" +
+        "\tpreload mach - dump the current level's machine/joint state\r\n" +
+        "\tpreload warm <levelId|all> - pre-read level files into the OS page cache (debug/A-B)\r\n" +
         "\tpreload status - held-scene preloader state";
 
     public static void Init(TwilightClient client, MatchSession session, SimulatedTimer timer, MatchController match)
@@ -186,7 +192,7 @@ internal static class TwilightCommands
     {
         var pre = Preload.ScenePreloadManager.Instance;
         if (pre == null) { TwilightLog.Print("twi preload: preloader not initialised."); return; }
-        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach>"); return; }
+        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach|warm <levelId|all>>"); return; }
 
         switch (parts[1].ToLowerInvariant())
         {
@@ -215,8 +221,15 @@ internal static class TwilightCommands
                 pre.DumpMachines();
                 TwilightLog.Print("twi preload: machine state dumped to LogOutput.log.");
                 return;
+            case "warm":
+                // "all" is matched literally before any canonicalisation; a level id
+                // is canonicalised inside WarmLevel (the console lowercases the line).
+                if (parts.Length < 3) TwilightLog.Print("twi preload warm <levelId|all>   (e.g. Aztec, a workshop id, or all)");
+                else if (parts[2] == "all") Preload.DiskWarmup.WarmAllLevels();
+                else Preload.DiskWarmup.WarmLevel(parts[2]);
+                return;
             default:
-                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach>");
+                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach|warm <levelId|all>>");
                 return;
         }
     }

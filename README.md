@@ -44,6 +44,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
 | `Features.ProbeFreezeUnbakedHolds` | `true` | **未烘焙关保持期全黑修复（实验性）**：hold 非烘焙探针的关（Halloween/Steam 以外全部）时，玩家落在其探针凸包内会让所有动态物体（含玩家模型）采到全零系数、完全失去环境光。此项把冻结同样应用到未烘焙组——值取加载前游玩关结构的实采样，换入**不写回**（场景激活时引擎自会重填，避免历史上的过曝级联）。可能存在轻微亮度偏移；关闭则保持期维持全黑 |
 | `Features.PreloadUnloadUnusedAfterSwap` | `true` | **换入后清扫**：每次换入完成、旧场景卸载后执行 `Resources.UnloadUnusedAssets()` 并等待（约 50-145ms）。additive 预载路径会按不同场景累积泄漏 native 资产，长合集（约 12 个不同场景起）最终在场景加载时 OOM 硬崩；清扫即修复（代价是每次换入多一次短卡顿），关闭可做 A/B 对比 |
+| `Features.EnableDiskCacheWarmup` | `true` | **保守预载（磁盘缓存预热）**：PREP 期首关 hold 完成后，单一后台线程把合集后续关卡的磁盘文件预读进 OS 页缓存——比赛中的链式预载读盘变内存读，仅剩反序列化 CPU 负担。纯文件 IO（不触碰场景/光照、单块固定缓冲不增进程内存），任何失败静默退化为现状；`twi reload` 热切（关闭只停新预热，进行中的跑完） |
+| `Features.DiskWarmupWarmSharedFiles` | `true` | 磁盘缓存预热时连同共享资产一并预热：按目标关 build index **邻接裁剪**的 `sharedassets{N}.*` 三件套 + `resources.assets`（全合合约 600MB 量级，而非全部 shared 文件的 ~4.1GB；场景表兜底/`warm all` 时退化为全量）；逐文件体积见 `Debug.DebugPreloadLogger` 日志，机器内存吃紧可关（页缓存本就由内核管理、可回收） |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -86,6 +88,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
 | `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表逐条纹理标识/逐场景 renderer lightmapIndex 直方图/LOD 层状态/进程内存），排查换入光照与内存问题用 |
 | `twi preload mach` | 转储当前关全部机器的关节/物理状态（AngularJoint/Lever/Catapult/铰链角度与驱动目标等），机器异常时当场运行 |
+| `twi preload warm <levelId\|all>` | **保守预载验证**：手动把指定关卡（或 `all` = 全部场景文件 + 共享文件）预读进 OS 页缓存，不经比赛流程（调试与冷/热缓存 A/B 用）；进度见 `twi preload status` 的 `warm:` 行 |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
@@ -144,8 +147,19 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
   PreloadUnloadUnusedAfterSwap`）——additive 预载路径会按不同场景累积泄漏
   native 资产，长合集最终 OOM 硬崩（已定案），清扫即修复。完整问题清单与
   修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
+- **保守预载（磁盘缓存预热，`Features.EnableDiskCacheWarmup`）**：与链式预载互补——
+  PREP 期首关 hold 完成（dormant 且已上报）后，单一后台线程（低优先级、固定 1MB
+  复用缓冲）把合集**除首关外全部后续关卡**的磁盘文件流式读一遍丢弃，装进 OS 页缓存
+  （内核管理、可回收，不占进程内存）；比赛中链式 hold 的读盘即变内存读，仅剩
+  反序列化/集成的 CPU 负担。开局（`round_start` 换入）或改图即协作式停止（当前
+  文件读完即止），比赛中不预热。内置关文件经引擎 build-settings 场景表映射
+  （真机实证 43/43 场景可映射；映射失败自动退化为预热全部 `level*` 文件），共享
+  资产按场景 build index 邻接裁剪（`sharedassets{N}.*` 三件套，全合约 600MB 而非
+  全量 4.1GB），workshop 关只读其加载路径真正读的两个文件（`metadata.json` +
+  `data` 包），未安装项跳过、绝不触发下载。任何失败静默退化为现状。手动触发与
+  冷/热缓存 A/B：`twi preload warm <levelId|all>`。
 - **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
-- 调试：`twi preload hold/swap/drop/status/rs` 可在不连服务端的情况下手工验证
+- 调试：`twi preload hold/swap/drop/status/rs/mach` 可在不连服务端的情况下手工验证
   驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap
   即 M3 链式换入的最小复现，如 `twi preload hold Siege` 后换入验证投石机）。
 
