@@ -21,7 +21,8 @@ namespace TwilightCore.Preload;
 /// <list type="bullet">
 /// <item>App prologue — App.cs:954/975-990 (startedCheckpoint, HideMenus,
 /// SuspendDeltasForLoad) and the LaunchGame coroutine head — App.cs:993-1017
-/// (FadeOutActive, state=LoadLevel, 0.2s ui fade, DiscardPools);</item>
+/// (FadeOutActive, state=LoadLevel, DiscardPools; the 0.2s menu-fade wait is
+/// deliberately skipped for instant entry);</item>
 /// <item>Game.LoadLevel prologue — Game.cs:652-693 (ClearAllButPlayers,
 /// BeforeLoad/SignalManager.BeginReset, skybox capture, state=LoadingLevel);</item>
 /// <item>timer-edge waits, THEN the "load" itself as one atomic frame:
@@ -149,7 +150,11 @@ internal static class SwapInSequence
             App.state = AppSate.LoadLevel;
         });
         if (err != null) { onFallback(held, err); yield break; }
-        if (ui) yield return new WaitForSeconds(0.2f);
+        // App.LaunchGame waits 0.2s here for the menu fade to play; the swap
+        // deliberately does NOT (real-machine preference: round_start ends with
+        // the player in the level as fast as possible — ExitMenus in the tail
+        // tears the menu down the moment the level appears). FadeOutActive
+        // itself is kept: it also sets MenuSystem.state=Inactive.
 
         err = TryStep("net pools", NetStream.DiscardPools);
         if (err != null) { onFallback(held, err); yield break; }
