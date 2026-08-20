@@ -127,6 +127,7 @@ internal static class LightingDiagnostics
             var hist = new Dictionary<int, int>();       // renderer.lightmapIndex → count
             var combinedHist = new Dictionary<int, int>(); // CombinedMesh-* renderers only
             int combinedObjs = 0, lods = 0, inCombined = 0, inQueue = 0, rendererCount = 0;
+            int lightsAll = 0, rigidbodies = 0, colliders = 0, joints = 0, gameObjects = 0;
             MB2_LODManager mgr = null;
             foreach (var root in roots)
             {
@@ -141,6 +142,11 @@ internal static class LightingDiagnostics
                     Bump(hist, idx);
                     if (isCombined) Bump(combinedHist, idx);
                 }
+                lightsAll += root.GetComponentsInChildren<Light>(true).Length;
+                rigidbodies += root.GetComponentsInChildren<Rigidbody>(true).Length;
+                colliders += root.GetComponentsInChildren<Collider>(true).Length;
+                joints += root.GetComponentsInChildren<Joint>(true).Length;
+                gameObjects += root.GetComponentsInChildren<Transform>(true).Length;
                 if (mgr == null)
                 {
                     var m = root.GetComponentInChildren<MB2_LODManager>(true);
@@ -157,6 +163,7 @@ internal static class LightingDiagnostics
 
             bool isActive = sc.name == active.name;
             sb.Append($"\n  [{i}] '{sc.name}'{(isActive ? " ACTIVE" : "")} roots={roots.Length} renderers={rendererCount}");
+            sb.Append($"\n    census: go={gameObjects} lights={lightsAll} rb={rigidbodies} col={colliders} joint={joints}");
             sb.Append($"\n    lmIdx hist: {FormatHist(hist)}");
             sb.Append($"\n    combinedMesh: objs={combinedObjs} lmIdx hist: {FormatHist(combinedHist)}");
             sb.Append($"\n    MB2_LOD: total={lods} inCombined={inCombined} inQueue={inQueue}");

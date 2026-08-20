@@ -244,6 +244,7 @@ internal static class SwapInSequence
         // ── the "load": one atomic frame — activate, re-enable, register ──
         tStep = Time.realtimeSinceStartup;
         HeldScene.RenderSettingsSnapshot appliedRS = default(HeldScene.RenderSettingsSnapshot);   // diagnostics: what the engine applied at activation
+        float tSet = 0f, tProbe = 0f, tRoots = 0f, tFields = 0f;   // activation sub-step timings (heavy-level investigation)
         err = TryStep("scene activate", () =>
         {
             // ORDER MATTERS (fog claim). Activate the held scene FIRST —
@@ -254,12 +255,14 @@ internal static class SwapInSequence
             // Level.OnEnable ADOPTS those live values. No yield inside this
             // block: CaveRender drives the global fog from Game.currentLevel
             // every frame and must not interleave. The lightmap system is left
-            // entirely engine-owned (no lightmapsMode write: two lightmapped
-            // scenes coexist during a hold and the engine dedups table entries
-            // — a mode write on the merged table is our prime suspect for the
-            // native crash at Ice_merged's load).
+            // entirely engine-owned — SetActiveScene applies the scene's
+            // lightmapsMode itself (verified in real-machine logs), and manual
+            // writes on the shared table are forbidden.
+            float a = Time.realtimeSinceStartup;
             SceneManager.SetActiveScene(held.Scene);
             appliedRS = HeldScene.RenderSettingsSnapshot.Capture();
+            tSet = Time.realtimeSinceStartup - a;
+            a = Time.realtimeSinceStartup;
             // Probe write-back (tinting fix): BAKED scenes only — the hold
             // froze their coefficients into a uniform field; restore the real
             // values now, same sync frame, before render. Unbaked scenes were
@@ -293,8 +296,12 @@ internal static class SwapInSequence
                     lpU.bakedProbes = uniform;
                 }
             }
+            tProbe = Time.realtimeSinceStartup - a;
+            a = Time.realtimeSinceStartup;
             for (int i = 0; i < held.Roots.Length; i++)
                 if (held.RootWasActive[i]) held.Roots[i].SetActive(true);
+            tRoots = Time.realtimeSinceStartup - a;
+            a = Time.realtimeSinceStartup;
             // Game fields + currentLevel switch in the same frame: CaveRender
             // drives the global fog from Game.currentLevel every frame, so the
             // first render after activation must already run on the new level.
@@ -302,8 +309,12 @@ internal static class SwapInSequence
             game.currentLevelNumber = held.Number;
             game.workshopLevel = held.Metadata;   // null for built-in/editor-pick, as in the standard path
             game.LevelLoaded(held.Level);         // re-register Game.currentLevel (Game.cs:226)
+            tFields = Time.realtimeSinceStartup - a;
         });
         if (err != null) { onFallback(held, err); yield break; }
+        if (TwilightConfig.PreloadDebugLogging)
+            Plugin.Logger.LogInfo(
+                $"[Preload] activate detail: setActiveScene={tSet * 1000f:0}ms probe={tProbe * 1000f:0}ms roots={tRoots * 1000f:0}ms fields={tFields * 1000f:0}ms");
         Plugin.Logger.LogInfo(
             $"[Preload] swap timing: activate {(Time.realtimeSinceStartup - tStep) * 1000f:0} ms{(TwilightConfig.PreloadDebugLogging ? $"; engine-applied rs={appliedRS.Describe()}" : "")}");
 
