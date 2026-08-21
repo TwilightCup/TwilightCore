@@ -201,6 +201,10 @@ public class TwilightClient : MonoBehaviour
             MainThreadDispatcher.Enqueue(() =>
             {
                 IsAuthenticated = true;
+                // A fully authenticated connection means the reconnect SUCCEEDED:
+                // reset the backoff so the next independent outage starts from the
+                // minimum again instead of escalating across separate drops.
+                _backoffSecs = TwilightConfig.ReconnectMinBackoffSecs.Value;
                 string seat = msg.GetString("seat");
                 // Server contract (SrvAuthOk) sends match_id / match_name, not session_*.
                 string match = msg.GetString("match_name");
