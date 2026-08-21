@@ -112,6 +112,17 @@ internal static class TwilightConfig
     /// cache is kernel-reclaimable either way).
     /// </summary>
     public static ConfigEntry<bool> DiskWarmupWarmSharedFiles;
+    /// <summary>
+    /// Disk-cache warmup strategy. "follow-chain" (default): PREP head-warms
+    /// only the levels right after the first, then each completed chained
+    /// hold warms the level after next — pages get used within ~one level of
+    /// warming (low eviction risk, small steady page-cache footprint), and
+    /// local `lc` runs benefit too; the cost is mild background reads during
+    /// the round, landing in the disk-idle window between a completed hold
+    /// and the next hold starting. "prep-all": warm the whole collection
+    /// during PREP (zero in-round IO).
+    /// </summary>
+    public static ConfigEntry<string> DiskWarmupMode;
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
     public static ConfigEntry<bool> HudEnabled;
@@ -199,6 +210,11 @@ internal static class TwilightConfig
             "Warm the warmed scenes' adjacent sharedassets{N}.* trios + resources.assets alongside the level files " +
             "(scene loads fault them in on demand; ~600MB for a full collection vs ~4.1GB for all shared files). " +
             "Per-file sizes visible in the debug preload log; toggle off on machines with tight RAM headroom.");
+        DiskWarmupMode = config.Bind("Features", "DiskWarmupMode", "follow-chain",
+            "Disk-cache warmup strategy: 'follow-chain' = PREP head-warms the levels right after the first, then each " +
+            "completed chained hold warms the level after next (fresher pages, smaller steady footprint, also covers local " +
+            "lc runs; mild in-round background reads in the disk-idle window); 'prep-all' = warm the whole collection " +
+            "during PREP (zero in-round IO). Hot via `twi reload`.");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

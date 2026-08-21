@@ -29,8 +29,14 @@ namespace TwilightCore.Preload;
 /// hold is dormant AND its done report went out — warming never competes with
 /// the round_start critical path; <see cref="Cancel"/> fires when the phase
 /// leaves PREP/COUNTDOWN (round start or abort) or a new pick_announced
-/// arrives. Nothing warms mid-round: the chained holds simply read what this
-/// pass cached, and the standard fallback path benefits equally.</para>
+/// arrives. Strategy (<c>Features.DiskWarmupMode</c>): "prep-all" warms the
+/// whole collection at PREP and nothing warms mid-round; "follow-chain"
+/// (default) head-warms only the levels right after the first, then each
+/// completed chained hold triggers <see cref="WarmAfterChainedHold"/> for the
+/// level after next — mild background reads inside the disk-idle window
+/// (previous hold done, next hold not started), pages used within ~one level,
+/// and local <c>lc</c> runs covered too. The standard fallback load path
+/// benefits equally in both modes.</para>
 ///
 /// <para>File mapping: built-in/editor-pick levels resolve their scene name
 /// through the game's own level tables, then the player's build-settings scene
@@ -68,6 +74,33 @@ internal static class DiskWarmup
     // Scene-name → build-index table, built once per process by SceneTable().
     private static Dictionary<string, int> _sceneTable = new Dictionary<string, int>();
     private static bool _sceneTableBuilt;
+
+    private static bool _modeWarned; // one-shot warning for an unknown DiskWarmupMode value
+
+    private enum WarmMode
+    {
+        PrepAll,      // warm the whole collection during PREP
+        FollowChain,  // PREP head-warm + warm the level-after-next after each chained hold
+    }
+
+    /// <summary>Current strategy from <c>Features.DiskWarmupMode</c> ("prep-all" | "follow-chain"; anything else warns once and defaults to follow-chain). Main thread only.</summary>
+    private static WarmMode Mode
+    {
+        get
+        {
+            var entry = TwilightConfig.DiskWarmupMode;
+            if (entry != null && string.Equals(entry.Value, "prep-all", StringComparison.OrdinalIgnoreCase))
+                return WarmMode.PrepAll;
+            if (entry != null && string.Equals(entry.Value, "follow-chain", StringComparison.OrdinalIgnoreCase))
+                return WarmMode.FollowChain;
+            if (entry != null && !_modeWarned && !string.IsNullOrEmpty(entry.Value))
+            {
+                _modeWarned = true;
+                Plugin.Logger.LogWarning($"[Preload] disk warm: unknown Features.DiskWarmupMode '{entry.Value}' — using follow-chain");
+            }
+            return WarmMode.FollowChain;
+        }
+    }
 
     // ── match-flow entry points (main thread, called from ScenePreloadManager) ──
 
@@ -162,18 +195,67 @@ internal static class DiskWarmup
                 key = _armedKey;
             }
 
-            var files = BuildFileList(levels);
-            if (files.Count == 0)
+            // follow-chain only head-warms here (the levels right after the
+            // first); prep-all warms the whole announced collection upfront.
+            if (Mode == WarmMode.FollowChain && levels.Count > 2)
             {
-                Plugin.Logger.LogInfo("[Preload] disk warm: nothing to warm (empty file list).");
-                return;
+                var head = levels.GetRange(0, 2);
+                WarmLevels(head, "pick-head " + string.Join("|", head.ToArray()));
             }
-            Start(files, "pick " + key);
+            else
+            {
+                WarmLevels(levels, "pick " + key);
+            }
         }
         catch (Exception e)
         {
             Plugin.Logger.LogWarning($"[Preload] disk warm start failed (ignored): {e.Message}");
         }
+    }
+
+    /// <summary>
+    /// A CHAINED hold just went dormant while playing level N — warm level N+2
+    /// now, in the disk-idle window before the N+1 swap starts the next hold.
+    /// follow-chain mode only; deliberately NO match gates, because chained
+    /// holds also run in local <c>lc</c> collection runs without a server.
+    /// Stays stateless: re-warming already-hot pages is free, so repeated
+    /// calls (self-heal re-holds) cost a warm re-read at worst.
+    /// </summary>
+    internal static void WarmAfterChainedHold()
+    {
+        try
+        {
+            if (TwilightConfig.EnableDiskCacheWarmup == null || !TwilightConfig.EnableDiskCacheWarmup.Value) return;
+            if (Mode != WarmMode.FollowChain) return;
+            var mgr = CollectionManager.Instance;
+            var col = mgr != null ? mgr.CurrentCollection : null;
+            if (col == null || col.Levels == null) return;
+            int afterNext = mgr.CurrentLevelIndex + 2;
+            if (afterNext < 0 || afterNext >= col.Levels.Count) return; // final stretch — nothing left ahead
+            // A repeat of the level that was just held reads the same files the
+            // hold already loaded — skip the pointless run.
+            if (afterNext > 0 && col.Levels[afterNext] == col.Levels[afterNext - 1]) return;
+            string id = CollectionManager.CanonicalizeLevelId(col.Levels[afterNext]);
+            if (string.IsNullOrEmpty(id)) return;
+            WarmLevels(new List<string> { id }, "chain " + id);
+        }
+        catch (Exception e)
+        {
+            Plugin.Logger.LogWarning($"[Preload] disk warm chain start failed (ignored): {e.Message}");
+        }
+    }
+
+    /// <summary>Build + start a warming run (main thread); returns the queued file count. Shared by the PREP entry, the follow-chain entry and the manual commands.</summary>
+    private static int WarmLevels(List<string> levels, string key)
+    {
+        var files = BuildFileList(levels);
+        if (files.Count == 0)
+        {
+            Plugin.Logger.LogInfo("[Preload] disk warm: nothing to warm (empty file list).");
+            return 0;
+        }
+        Start(files, key);
+        return files.Count;
     }
 
     /// <summary>
@@ -194,6 +276,30 @@ internal static class DiskWarmup
         }
     }
 
+    /// <summary>
+    /// Cancel only a PREP-started run (key "pick…"). Used at the round-start
+    /// swap-in so lingering PREP warming stops before the round's own loads
+    /// begin — while follow-chain runs (key "chain…", launched after chained
+    /// holds mid-round) pass through untouched.
+    /// </summary>
+    internal static void CancelPrepWarmup(string reason)
+    {
+        lock (_gate)
+        {
+            if (_queued != null && IsPrepRun(_queued)) _queued = null;
+            if (_active != null && !_active.Cancelled && IsPrepRun(_active))
+            {
+                _active.EndReason = reason;
+                _active.Cancelled = true;
+            }
+        }
+    }
+
+    private static bool IsPrepRun(WarmRun run)
+    {
+        return run.Key.StartsWith("pick", StringComparison.Ordinal);
+    }
+
     // ── manual / debug entry points (`twi preload warm …`, main thread) ──
 
     /// <summary>Warm one level's file set plus the shared companions (bypasses the match gates).</summary>
@@ -211,14 +317,11 @@ internal static class DiskWarmup
                     : $"twi preload warm: unknown level id '{canonical}'.");
                 return;
             }
-            var files = BuildFileList(new List<string> { canonical });
-            if (files.Count == 0)
-            {
+            int queued = WarmLevels(new List<string> { canonical }, "manual " + canonical);
+            if (queued > 0)
+                TwilightLog.Print($"twi preload warm: queued {queued} files for '{canonical}'.");
+            else
                 TwilightLog.Print($"twi preload warm: nothing to warm for '{canonical}'.");
-                return;
-            }
-            Start(files, "manual " + canonical);
-            TwilightLog.Print($"twi preload warm: queued {files.Count} files for '{canonical}'.");
         }
         catch (Exception e)
         {
@@ -299,7 +402,7 @@ internal static class DiskWarmup
                 else
                     run = "never run";
 
-                return $"warm: {run}; armed: {armed}";
+                return $"warm: {run}; armed: {armed}; mode: {(Mode == WarmMode.PrepAll ? "prep-all" : "follow-chain")}";
             }
         }
         catch (Exception e)

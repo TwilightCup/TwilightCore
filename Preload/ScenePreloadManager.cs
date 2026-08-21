@@ -810,6 +810,14 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             // re-check everything; a run never competes with this pipeline).
             DiskWarmup.MaybeStart();
         }
+        else if (chained)
+        {
+            // follow-chain warmup: the N+1 hold just went dormant while playing
+            // level N — warm N+2 in the disk-idle window before the next hold
+            // needs it. No-op outside follow-chain mode; debug holds (neither
+            // flag) never trigger warming.
+            DiskWarmup.WarmAfterChainedHold();
+        }
         PipelineExited();
     }
 
@@ -1003,9 +1011,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _lastConsumed = held;
         held.State = HeldSceneState.Consumed;
         Plugin.Logger.LogInfo($"[Preload] swap-in: '{levelId}' (scene '{held.SceneName}')");
-        // The round is starting — stop warming so the load path owns the disk.
-        // (Mid-round chained swap-ins pass through here too; cancel is then a no-op.)
-        DiskWarmup.Cancel("round_start swap-in");
+        // The round is starting — stop PREP warming so the load path owns the
+        // disk. Mid-round chained swap-ins pass through here too; they only
+        // cancel prep runs, so an in-flight follow-chain warm (the level after
+        // next) is deliberately left to finish.
+        DiskWarmup.CancelPrepWarmup("round_start swap-in");
         _swapRunning = true;
         StartCoroutine(SwapRunner(held));
         return true;
