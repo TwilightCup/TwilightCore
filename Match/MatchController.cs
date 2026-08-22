@@ -207,7 +207,11 @@ internal sealed class MatchController
                 _chat.DisplayChat(msg.GetString("sender_name"), msg.GetString("seat"), msg.GetString("text"));
                 break;
             case Msg.System:
-                _chat.DisplaySystem(msg.GetString("text"), msg.GetString("kind", "info"));
+                // sender = display prefix: "Twilight" for match-wide broadcasts
+                // (absent on older servers — default matches the broadcast rule).
+                _chat.DisplaySystem(
+                    msg.GetString("text"), msg.GetString("kind", "info"),
+                    msg.GetString("sender", "Twilight"));
                 break;
             case Msg.ReadyState:
                 _session.AReady = msg.GetBool("a_ready");
@@ -256,7 +260,8 @@ internal sealed class MatchController
                 break;
             case Msg.Error:
                 Plugin.Logger.LogWarning($"[Twilight] server error {msg.GetInt("code")}: {msg.GetString("msg")}");
-                _chat.DisplaySystem($"Error {msg.GetInt("code")}: {msg.GetString("msg")}", "error");
+                // Targeted reply — only this client sees it → System prefix.
+                _chat.DisplaySystem($"Error {msg.GetInt("code")}: {msg.GetString("msg")}", "error", "System");
                 break;
             default:
                 Plugin.Logger.LogInfo("[Twilight] unhandled message type: " + msg.GetString("type"));
@@ -311,7 +316,7 @@ internal sealed class MatchController
         if (!RoundIngestion.TryStart(pickDict, colDict, out string err))
         {
             Plugin.Logger.LogError("[Twilight] failed to start server collection: " + err);
-            _chat.DisplaySystem("Failed to load collection: " + err, "error");
+            _chat.DisplaySystem("Failed to load collection: " + err, "error", "System");
             Reporter.Stop();
             LeaderboardTracker.Clear(); // the round never really started here
             return;

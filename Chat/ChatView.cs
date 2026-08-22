@@ -137,8 +137,8 @@ public class ChatView : MonoBehaviour, IChatView
         PushLine(line);
     }
 
-    public void DisplaySystem(string text, string kind)
-        => PushLine("[System] " + text);
+    public void DisplaySystem(string text, string kind, string sender = "Twilight")
+        => PushLine($"[{sender}] " + text);
 
     public void ShowInfo(string text) => PushLine(text);
 

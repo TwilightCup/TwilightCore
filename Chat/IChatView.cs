@@ -11,8 +11,13 @@ internal interface IChatView
     /// <summary>Append a chat line from a peer (senderName/seat from the server).</summary>
     void DisplayChat(string senderName, string seat, string text);
 
-    /// <summary>Append a system line (countdown, round info, command reply, error, …).</summary>
-    void DisplaySystem(string text, string kind);
+    /// <summary>
+    /// Append a system line (countdown, round info, command reply, error, …).
+    /// <paramref name="sender"/> is the display prefix: "Twilight" for match-wide
+    /// broadcasts (server default), "System" for feedback only this client sees
+    /// (server error replies, local failures).
+    /// </summary>
+    void DisplaySystem(string text, string kind, string sender = "Twilight");
 
     /// <summary>Append a local plugin info line (not from the server).</summary>
     void ShowInfo(string text);
@@ -26,7 +31,7 @@ internal sealed class NullChatView : IChatView
 {
     public static readonly NullChatView Instance = new NullChatView();
     public void DisplayChat(string senderName, string seat, string text) { }
-    public void DisplaySystem(string text, string kind) { }
+    public void DisplaySystem(string text, string kind, string sender = "Twilight") { }
     public void ShowInfo(string text) { }
     public void FocusInput() { }
 }
