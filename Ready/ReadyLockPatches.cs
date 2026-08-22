@@ -45,7 +45,7 @@ internal static class ReadyLockPatches
         if (session == null || !session.ReadyLockActive) return true;
 
         Plugin.Logger.LogInfo("[ReadyLock] blocked manual level launch (ready/countdown).");
-        ChatView.Instance?.ShowInfo("[Twilight] You've readied up — wait for the round to start.");
+        ChatView.Instance?.ShowInfo("[System] You've readied up — wait for the round to start.");
         return false;
     }
 }

@@ -121,10 +121,10 @@ internal sealed class MatchController
     {
         if (_session.Phase != MatchPhase.InRound || !Reporter.IsActive)
         {
-            _chat.ShowInfo("[Twilight] No active round to finish.");
+            _chat.ShowInfo("[System] No active round to finish.");
             return;
         }
-        _chat.ShowInfo("[Twilight] Finishing round — remaining attempts (if any) count as N/A.");
+        _chat.ShowInfo("[System] Finishing round — remaining attempts (if any) count as N/A.");
         Reporter.FinishRound();
         // Reporter is stopped now, so aborting the local collection run fires
         // RunAborted into an inactive reporter (no forfeit) and returns the
@@ -146,7 +146,7 @@ internal sealed class MatchController
         _session.SessionId = authOk.GetString("match_id");
         _session.SessionName = authOk.GetString("match_name");
         LeaderboardTracker.OnAuthenticated(authOk); // both seats' display names + local seat
-        _chat.ShowInfo($"[Twilight] Connected: {_session.DisplayName} ({_session.Seat}) — {_session.SessionName ?? "(unnamed match)"}");
+        _chat.ShowInfo($"[System] Connected: {_session.DisplayName} ({_session.Seat}) — {_session.SessionName ?? "(unnamed match)"}");
 
         // Align match mode with the (possibly mid-round) session state we're
         // reconnecting into (比赛模式锁定时机需求 §2.3): IN_ROUND → immediately
@@ -193,7 +193,7 @@ internal sealed class MatchController
         }
 
         if (!string.IsNullOrEmpty(reason))
-            _chat.ShowInfo("[Twilight] Disconnected: " + reason + (willReconnect ? " (will reconnect automatically)" : ""));
+            _chat.ShowInfo("[System] Disconnected: " + reason + (willReconnect ? " (will reconnect automatically)" : ""));
     }
 
     // ── Inbound dispatch ───────────────────────────────────────────
@@ -225,14 +225,8 @@ internal sealed class MatchController
             case Msg.CountdownTick:
                 // The server also emits a system message with the number — no extra UI needed.
                 break;
-            case Msg.CountdownAbort:
-                _chat.DisplaySystem("Countdown cancelled", "countdown");
-                break;
             case Msg.RoundStart:
                 HandleRoundStart(msg);
-                break;
-            case Msg.RoundStartedBroadcast:
-                _chat.DisplaySystem($"Round started: {msg.GetString("pick_code")} - {msg.GetString("pick_name")}", "round_start");
                 break;
             case Msg.PlayerStatus:
                 LeaderboardTracker.OnPlayerStatus(msg);
@@ -240,23 +234,22 @@ internal sealed class MatchController
             case Msg.LevelTimeUpdate:
                 LeaderboardTracker.OnLevelTimeUpdate(msg);
                 break;
-            case Msg.RoundResult:
-                HandleRoundResult(msg);
-                break;
-            case Msg.CumulativeScore:
-                _chat.DisplaySystem($"Score {msg.GetInt("wins_a")} : {msg.GetInt("wins_b")} (first to {msg.GetInt("threshold")})", "score");
-                break;
             case Msg.MatchEnd:
-                _chat.DisplaySystem($"Match over — winner: {msg.GetString("winner")}", "match_end");
+                // The server's match.ended system message already covers this.
                 Reporter.Stop();
                 LeaderboardTracker.Clear();
                 SetMatchMode(false); // match over — restore the player's local setup (T2.4)
                 break;
+            case Msg.CountdownAbort:
+            case Msg.RoundStartedBroadcast:
+            case Msg.RoundResult:
+            case Msg.CumulativeScore:
             case Msg.CounterState:
             case Msg.CounterAlert:
             case Msg.DraftState:
             case Msg.VerdictEdit:
-                // The server already emits human-readable system messages for these.
+                // The server already emits human-readable system messages for these;
+                // no local echo, so Twilight lines stay verbatim identical on every client.
                 break;
             case Msg.Error:
                 Plugin.Logger.LogWarning($"[Twilight] server error {msg.GetInt("code")}: {msg.GetString("msg")}");
@@ -288,9 +281,9 @@ internal sealed class MatchController
         // Every phase transition re-aligns the lock (§2.2): PREP→COUNTDOWN→
         // IN_ROUND lock; ROUND_JUDGING/ROUND_END/MATCH_END/→PREP unlock.
         UpdateMatchModeFromSession();
-
-        if (_session.Phase == MatchPhase.Prep && prev != MatchPhase.Prep)
-            _chat.DisplaySystem("Prep phase started — type !ready when ready", "prep");
+        // No chat line on →PREP: live transitions get the server's prep.started
+        // broadcast (Twilight), and reconnects into PREP get a targeted
+        // sender=System hint in the handshake (both arrive as Msg.System).
     }
 
     private void HandleRoundStart(Dictionary<string, object> msg)
@@ -301,7 +294,8 @@ internal sealed class MatchController
         _session.Pick = PickSnapshot.From(pickDict);
         Plugin.Logger.LogInfo(
             $"[Twilight] round_start: {_session.Pick.Code} - {_session.Pick.Name} type={_session.Pick.Type} retry={_session.Pick.RetryCount}");
-        _chat.DisplaySystem($"Current pick: {_session.Pick.Code} - {_session.Pick.Name}", "round_start");
+        // No chat line here: the server's round.started system message already
+        // announces the pick match-wide.
 
         // The server sends round_start BEFORE the phase_change→IN_ROUND, so flip the
         // phase ourselves: this also releases the false-start lock for our own launch.
@@ -325,15 +319,5 @@ internal sealed class MatchController
         // Leaderboard snapshot is created here — the first PlayingLevel edge
         // (and the first player_status) may follow immediately.
         LeaderboardTracker.OnRoundStart(_session.RoundId, pickDict, RoundIngestion.LastResolvedLevels);
-    }
-
-    private void HandleRoundResult(Dictionary<string, object> msg)
-    {
-        int verdict = msg.GetInt("verdict");
-        long a = msg.GetLong("score_a_ms", -1);
-        long b = msg.GetLong("score_b_ms", -1);
-        _chat.DisplaySystem(
-            $"Round result: verdict={verdict}  A={(a >= 0 ? a + "ms" : "N/A")}  B={(b >= 0 ? b + "ms" : "N/A")}",
-            "verdict");
     }
 }
