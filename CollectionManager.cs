@@ -813,6 +813,25 @@ public class CollectionManager : MonoBehaviour
         try { LevelStarted?.Invoke(levelId, CurrentLevelIndex); }
         catch (Exception ex) { Plugin.Logger.LogWarning($"[CollectionManager] LevelStarted handler threw: {ex}"); }
 
+        // Fog-multiplier hygiene: CaveRender.OnPreCull drives the live fog as
+        // fogDensityMultiplier × currentLevel.fogDensity, and the multiplier is
+        // FreeRoamCam debug state (Comma/Period keys) that polls raw Input — keys
+        // typed into the console or the chat while the persistent rig is alive
+        // (Game.instance is non-null from boot, so FreeRoamCam runs at the main
+        // menu too) drift it upward. Every vanilla path into a level passes a
+        // menu whose ApplyMenuEffects resets it to 1 (MenuCameraEffects.
+        // FadeInPauseMenu); this funnel is also reached cold — boot → console
+        // connect → round_start swap-in with no menu navigation — where the drift
+        // would land in the level as N×-thick fog (opening the pause menu is the
+        // game's own reset). Restore the invariant here; the log line doubles as
+        // the real-machine confirmation when drift was actually present.
+        if (CaveRender.fogDensityMultiplier != 1f)
+        {
+            Plugin.Logger.LogInfo(
+                $"[CollectionManager] resetting fog density multiplier {CaveRender.fogDensityMultiplier:0.##} -> 1 (FreeRoamCam input drift).");
+            CaveRender.fogDensityMultiplier = 1f;
+        }
+
         // Held-scene fast path: if the preloader holds a dormant scene for exactly
         // this level, swap it in instead of launching through App (near-instant
         // round start). TrySwapIn fires no events of its own — LevelStarted above
