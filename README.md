@@ -3,8 +3,8 @@
 黄昏杯（Twilight Cup）比赛的**选手端** BepInEx 插件，用于《人类一败涂地》(Human: Fall Flat)。
 内嵌 [LevelCollections](https://github.com/...) 合集引擎，并连接已存在的
 `TwilightCupBackend` 服务端（FastAPI + WebSocket），实现：聊天、`!ready`、阶段/倒计时、
-服务端下发合集自动开跑、准备阶段锁定（防提前起跑），以及一套**模拟计时器**让比赛流程
-不依赖真实计时器也能跑通到计分/判定。
+服务端下发合集自动开跑、准备阶段锁定（防提前起跑）、多关回合的 **subsegment 实时时间差追踪**，
+以及一套**模拟计时器**让比赛流程不依赖真实计时器也能跑通到计分/判定。
 
 > 真实计时器（规则精确的每关计时 + 上报）会作为独立模块后续合并；当前用 `SimulatedTimer`
 > 临时替代，接口（`IRoundReporter`）已留好，合并时只换实现。
@@ -37,6 +37,10 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | 断线指数退避（重连沿用上次 `twi connect` 的地址） |
 | `Features.EnableReadyLock` | `true` | 准备阶段 `!ready` 之后、以及倒计时阶段锁定手动进关（未 ready 前可自由练习） |
 | `Features.EnableSimTimer` | `true` | 启用模拟计时器上报 |
+| `Features.EnableSubsegment` | `true` | 多关回合 subsegment 实时时间差追踪（见下节；需服务端已升级 + TwilightTimer 真实计时器在运行） |
+| `Subsegment.PlaneRadius` | `50` | 检测平面半径（米）：对方采样点处垂直于其运动向量的虚拟平面范围 |
+| `Subsegment.MinMove` | `0.5` | 采样间隔位移小于该值（米）则该样本不生成检测平面（近乎静止） |
+| `Subsegment.SampleInterval` | `1` | 采样间隔（秒） |
 | `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
 | `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
 | `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
@@ -72,10 +76,38 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi sim complete [final_ms]` | 模拟整回合完成 |
 | `twi sim forfeit [multi_exit\|single_exit_0_valid]` | 模拟弃权 |
 | `twi sim status` | 模拟计时器状态 |
+| `twi subseg status` | subsegment 追踪器状态（回合/关卡/采样与平面数/最近时间差） |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
 - 收到消息时（控制台未打开），会自动弹出**仅显示日志（无输入框）**的聊天框，持续 `Chat.PopupSecs`（默认 5 秒）后淡出；有新消息会顺延。可由 `Chat.PopupEnabled` 关闭。
+
+## Subsegment 实时时间差追踪
+
+多关（MULTI）回合中，双方选手各自跑同一合集，常规上报只有整关完成时间，关内无法比较进度。
+启用 `Features.EnableSubsegment` 后：
+
+- **采样**：每个关卡内，从角色**首次从装死状态苏醒**（进关天降落地 → 3 秒无意识 → 起身）
+  起，到**该关真正过关**为止，每秒记录一次当前总时间、位置、运动向量并上报服务端。
+  注意碰到通关判定区≠过关：游戏流程上要在这之后死亡（坠落或溺水）才触发过关，
+  判定区触碰与真正过关之间的走位/坠落耗时**照常计入**（与整关计时同口径）。
+  关内手动装死、
+  坠崖检查点复活**不会**重置录制（时钟不停，罚时自然计入）。
+- **检测**：服务端把一方的采样中转给对方；对方客户端在每个采样点处生成**垂直于运动向量、
+  半径 `Subsegment.PlaneRadius` 的虚拟平面**（纯数学检测，不创建任何 Unity 碰撞体，
+  不影响关卡物理、不会高速穿隧漏检），本方角色沿运动方向穿越时上报命中时刻。
+- **时间差**：服务端记录双方数据（仅内存、回合级，回合结束即清空），每次命中向双方/裁判/
+  导播广播 `subsegment_gap`（穿越方时间 − 采样方时间，正数 = 穿越方落后），供导播 overlay 使用。
+- **过关强制同步**：真实过关时向对方的**末样本**（其过关时刻的最后一条采样）补发一次命中——
+  双方终点必然是同一通关判定区，因此即使路线完全不同、途中一条平面都没碰到，每关也保证
+  恰好一次「通关时间差」比较（由后过关的一方发出；若之前真实跨越过该样本，以真实跨越为准）。
+- **时间口径**：时间值直接取 **TwilightTimer**（真实计时器，经 `TimerProviderRegistry` 注册）
+  的 `RoundTotalMs`——与官方计分**同一条时间线**，时间差可直接与成绩对照。采样窗口为
+  每关苏醒 → 真实过关。未注册真实计时器时 subsegment 不工作（**不回退**模拟计时器——
+  那是早期调试占位，后续会弃用）。
+- 选手侧**无任何游戏内显示**（避免实时看到对方进度干扰心态）；`twi subseg status` 查看本地状态。
+- 断线期间样本丢失（可接受）；重连后服务端把对方已存采样按序补放，检测平面自动重建。
+- 需要后端同步升级（新消息类型）；连上未升级的服务端时会在首次 400 后自动停发直到下回合。
 
 ## 服务端合集配置格式（`collection.raw`）
 

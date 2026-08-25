@@ -64,6 +64,24 @@ internal static class JsonCodec
         return def;
     }
 
+    public static float GetFloat(this Dictionary<string, object> d, string key, float def = 0f)
+    {
+        if (d != null && d.TryGetValue(key, out var o) && o != null)
+        {
+            switch (o)
+            {
+                case double dd: return (float)dd;
+                case float f: return f;
+                case long l: return l;
+                case int i: return i;
+                default:
+                    float.TryParse(o.ToString(), out float v);
+                    return v;
+            }
+        }
+        return def;
+    }
+
     public static bool GetBool(this Dictionary<string, object> d, string key, bool def = false)
     {
         if (d != null && d.TryGetValue(key, out var o) && o is bool b) return b;

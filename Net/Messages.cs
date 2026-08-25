@@ -15,6 +15,11 @@ internal static class Msg
     public const string AttemptSkip = "attempt_skip";
     public const string ProjectComplete = "project_complete";
     public const string ForfeitSignal = "forfeit_signal";
+    // Subsegment live-gap tracking (MULTI rounds). Note: "subsegment_sample" is
+    // ALSO the server→client relay of the opponent's sample (same literal both
+    // directions, like "chat").
+    public const string SubsegmentSample = "subsegment_sample";
+    public const string SubsegmentHit = "subsegment_hit";
 
     // ── Server → Client ─────────────────────────────────────────────
     public const string AuthOk = "auth_ok";
@@ -28,6 +33,7 @@ internal static class Msg
     public const string RoundStartedBroadcast = "round_started_broadcast";
     public const string PlayerStatus = "player_status";
     public const string LevelTimeUpdate = "level_time_update";
+    public const string SubsegmentGap = "subsegment_gap";
     public const string RoundResult = "round_result";
     public const string CumulativeScore = "cumulative_score";
     public const string MatchEnd = "match_end";

@@ -20,6 +20,7 @@ namespace TwilightCore;
 ///   twi sim complete [final_ms] — force-complete the project
 ///   twi sim forfeit [reason]    — force-forfeit (multi_exit | single_exit_0_valid)
 ///   twi sim status              — simulated-timer state
+///   twi subseg status           — subsegment tracker state (MULTI live-gap tracking)
 ///
 /// Connection never happens automatically — run <c>twi connect &lt;host&gt; [port]</c>
 /// after setting <c>Account.Username/Password</c> in the cfg. Progress (login → WS →
@@ -46,7 +47,8 @@ internal static class TwilightCommands
         "\tsim skip - skip current level/attempt (N/A)\r\n" +
         "\tsim complete [final_ms] - force-complete the project\r\n" +
         "\tsim forfeit [multi_exit|single_exit_0_valid] - force-forfeit\r\n" +
-        "\tsim status - simulated timer state";
+        "\tsim status - simulated timer state\r\n" +
+        "\tsubseg status - subsegment tracker state (MULTI live-gap tracking)";
 
     public static void Init(TwilightClient client, MatchSession session, SimulatedTimer timer, MatchController match)
     {
@@ -93,6 +95,9 @@ internal static class TwilightCommands
                 return;
             case "sim":
                 HandleSim(parts);
+                return;
+            case "subseg":
+                HandleSubseg(parts);
                 return;
             default:
                 PrintHelp();
@@ -163,6 +168,19 @@ internal static class TwilightCommands
                 TwilightLog.Print("twi sim <level_done|skip|complete|forfeit|status>");
                 return;
         }
+    }
+
+    private static void HandleSubseg(string[] parts)
+    {
+        if (parts.Length < 2 || parts[1].ToLowerInvariant() != "status")
+        {
+            TwilightLog.Print("twi subseg <status>");
+            return;
+        }
+        var tracker = Subsegment.SubsegmentTracker.Instance;
+        TwilightLog.Print(tracker != null
+            ? tracker.StatusString()
+            : "twi subseg: tracker not initialised.");
     }
 
     private static void PrintStatus()

@@ -103,6 +103,14 @@ public class Plugin : BaseUnityPlugin
         DontDestroyOnLoad(fallLimiter);
         fallLimiter.AddComponent<Physics.MenuFallSpeedLimiter>();
 
+        // MULTI-round subsegment tracking: 1 Hz wake→completion sampling +
+        // crossing detection of the opponent's relayed sample planes (live
+        // time gap). No Harmony of its own — level boundaries come from
+        // CollectionManager's own events.
+        var subseg = new GameObject("TwilightSubsegmentTracker");
+        DontDestroyOnLoad(subseg);
+        subseg.AddComponent<Subsegment.SubsegmentTracker>().Init(client);
+
         // Console commands (twi connect <host> [port] / disconnect / status / probe / sim / finish …).
         TwilightCommands.Init(client, session, fallback as SimulatedTimer, match);
 

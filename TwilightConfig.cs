@@ -48,6 +48,20 @@ internal static class TwilightConfig
     public static ConfigEntry<float> SameLevelReloadMinDwell;
     /// <summary>Clamp fall speed in the main menu while connected to the match server (anti-fall).</summary>
     public static ConfigEntry<bool> EnableMenuFallLimit;
+    /// <summary>
+    /// MULTI-round subsegment tracking: sample position/movement once per second
+    /// from the first wake-up in each level to the pass zone, and detect crossings
+    /// of the opponent's relayed sample planes, for a live time gap.
+    /// </summary>
+    public static ConfigEntry<bool> EnableSubsegment;
+
+    // ── Subsegment ────────────────────────────────────────────────
+    /// <summary>Half-extent (radius, metres) of the virtual crossing-detection plane around each sample point.</summary>
+    public static ConfigEntry<float> SubsegmentPlaneRadius;
+    /// <summary>Minimum displacement between samples (metres) for the sample to define a detection plane; slower samples are stored with a zero vector.</summary>
+    public static ConfigEntry<float> SubsegmentMinMove;
+    /// <summary>Sampling interval (seconds).</summary>
+    public static ConfigEntry<float> SubsegmentSampleInterval;
 
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
@@ -92,6 +106,16 @@ internal static class TwilightConfig
             "(clear visual gap between consecutive plays of one level). 0 = disable the detour.");
         EnableMenuFallLimit = config.Bind("Features", "EnableMenuFallLimit", true,
             "While connected to the match server, clamp the main-menu ragdoll's fall speed (anti-fall).");
+        EnableSubsegment = config.Bind("Features", "EnableSubsegment", true,
+            "MULTI rounds: sample position/movement 1x/sec from each level's first wake-up to the pass zone, " +
+            "and detect crossings of the opponent's sample planes, for a live time gap (server relays + broadcasts).");
+
+        SubsegmentPlaneRadius = config.Bind("Subsegment", "PlaneRadius", 50f,
+            "Half-extent (metres) of each virtual crossing-detection plane (perpendicular to the sampled movement vector).");
+        SubsegmentMinMove = config.Bind("Subsegment", "MinMove", 0.5f,
+            "Minimum displacement between samples (metres) for the sample to define a detection plane; slower samples are stored with a zero vector.");
+        SubsegmentSampleInterval = config.Bind("Subsegment", "SampleInterval", 1f,
+            "Subsegment sampling interval (seconds).");
 
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");

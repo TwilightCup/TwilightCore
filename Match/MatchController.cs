@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using TwilightCore.Chat;
 using TwilightCore.LeaderboardInternal;
 using TwilightCore.Net;
+using TwilightCore.Subsegment;
 using TwilightCore.Timer;
 
 namespace TwilightCore.Match;
@@ -189,6 +190,7 @@ internal sealed class MatchController
         if (!willReconnect)
         {
             Reporter.Stop();
+            SubsegmentTracker.Instance?.ResetRound(); // transient drops keep tracking (mirrors the reporter)
             SetMatchMode(false); // out of the match — player's local setup restored (T2.4)
         }
 
@@ -234,10 +236,20 @@ internal sealed class MatchController
             case Msg.LevelTimeUpdate:
                 LeaderboardTracker.OnLevelTimeUpdate(msg);
                 break;
+            case Msg.SubsegmentSample:
+                // Opponent's relayed sample — becomes a virtual crossing plane.
+                SubsegmentTracker.Instance?.OnOpponentSample(msg);
+                break;
+            case Msg.SubsegmentGap:
+                // Data-only: logged for twi subseg status; consumed by referee/
+                // director overlays on their own connections.
+                SubsegmentTracker.Instance?.OnGap(msg);
+                break;
             case Msg.MatchEnd:
                 // The server's match.ended system message already covers this.
                 Reporter.Stop();
                 LeaderboardTracker.Clear();
+                SubsegmentTracker.Instance?.ResetRound();
                 SetMatchMode(false); // match over — restore the player's local setup (T2.4)
                 break;
             case Msg.CountdownAbort:
@@ -253,6 +265,9 @@ internal sealed class MatchController
                 break;
             case Msg.Error:
                 Plugin.Logger.LogWarning($"[Twilight] server error {msg.GetInt("code")}: {msg.GetString("msg")}");
+                // Old-server breaker: a 400 right after a subsegment send means the
+                // backend doesn't know the message type — stop sampling this round.
+                SubsegmentTracker.Instance?.NotifyServerError(msg.GetInt("code"));
                 // Targeted reply — only this client sees it → System prefix.
                 _chat.DisplaySystem($"Error {msg.GetInt("code")}: {msg.GetString("msg")}", "error", "System");
                 break;
@@ -275,6 +290,7 @@ internal sealed class MatchController
         {
             Reporter.Stop();
             LeaderboardTracker.Clear(); // round over — GetSnapshot() returns null from here
+            SubsegmentTracker.Instance?.ResetRound();
         }
         // Reporter StartRound is driven by round_start (which carries pick + collection).
 
@@ -307,12 +323,18 @@ internal sealed class MatchController
         // segment's timing start races the load (ITimerProvider接口需求.md §2.2).
         Reporter.StartRound(_session.RoundId, _session.Pick);
 
+        // Subsegment tracker must be round-ready BEFORE ingestion: the first
+        // LevelStarted fires synchronously inside TryStart → LaunchLevel, and
+        // its Armed transition would otherwise be missed.
+        SubsegmentTracker.Instance?.OnRoundStart(_session.RoundId);
+
         if (!RoundIngestion.TryStart(pickDict, colDict, out string err))
         {
             Plugin.Logger.LogError("[Twilight] failed to start server collection: " + err);
             _chat.DisplaySystem("Failed to load collection: " + err, "error", "System");
             Reporter.Stop();
             LeaderboardTracker.Clear(); // the round never really started here
+            SubsegmentTracker.Instance?.ResetRound();
             return;
         }
 
