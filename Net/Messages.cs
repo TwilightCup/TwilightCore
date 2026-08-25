@@ -20,6 +20,8 @@ internal static class Msg
     // directions, like "chat").
     public const string SubsegmentSample = "subsegment_sample";
     public const string SubsegmentHit = "subsegment_hit";
+    // Preload gating (held-scene preload, sent by ScenePreloadManager):
+    public const string PreloadReport = "preload_report";
 
     // ── Server → Client ─────────────────────────────────────────────
     public const string AuthOk = "auth_ok";
@@ -41,6 +43,9 @@ internal static class Msg
     public const string CounterAlert = "counter_alert";
     public const string VerdictEdit = "verdict_edit";
     public const string DraftState = "draft_state";
+    // Preload gating (held-scene preload): pick preview + both seats' preload state.
+    public const string PickAnnounced = "pick_announced";
+    public const string PreloadState = "preload_state";
     public const string Error = "error";
 }
 

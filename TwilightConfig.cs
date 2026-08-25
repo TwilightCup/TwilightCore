@@ -63,6 +63,81 @@ internal static class TwilightConfig
     /// <summary>Sampling interval (seconds).</summary>
     public static ConfigEntry<float> SubsegmentSampleInterval;
 
+    /// <summary>
+    /// Held-scene preload: after !ready, additively load the announced MULTI pick's
+    /// first level during PREP and swap it in at round_start (near-instant round start).
+    /// SINGLE picks are unaffected and report preload "na". Any preload failure falls
+    /// back to the standard load path.
+    /// </summary>
+    public static ConfigEntry<bool> EnableScenePreload;
+    /// <summary>
+    /// M3 chained preload: while a collection run is playing a level, additively
+    /// preload the NEXT level in the background (dormant, low priority) and swap
+    /// it in at level advance — frame-level transitions instead of multi-second
+    /// loads. Adjacent same levels never preload (existing Empty-dwell path).
+    /// Disable if the in-round loading hurts framerate on target hardware.
+    /// </summary>
+    public static ConfigEntry<bool> EnableChainedPreload;
+    /// <summary>
+    /// Tinting fix for held-scene preloads: overwrite the active light-probe
+    /// set's coefficients with a uniform field (sampled at the player before the
+    /// load) for the hold window, and write the held scene's real coefficients
+    /// back at the swap. Without it, dynamic objects are tinted by the next
+    /// level's probes (ambient + baked lights) from preload completion until the
+    /// swap. Kill-switch in case the coefficient write misbehaves on some
+    /// Unity build (the hold then just keeps the cosmetic tinting).
+    /// </summary>
+    public static ConfigEntry<bool> EnableProbeFreeze;
+    /// <summary>
+    /// Experimental: extend the probe-coefficient freeze to UNBAKED held scenes
+    /// (every level except Halloween/Steam — their probe sets carry no readable
+    /// coefficients, so during the hold window dynamic objects sample zeros:
+    /// the "everything loses ambient and goes dark" artifact, including the
+    /// player model). The uniform's value source adapts: a sample from a BAKED
+    /// playing structure when available (verified correct), else the playing
+    /// scene's flat ambient light with an empirically calibrated scale. The
+    /// swap writes nothing back — scene activation re-applies the held scene's
+    /// own values. Off = hold windows of unbaked levels stay dark.
+    /// </summary>
+    public static ConfigEntry<bool> ProbeFreezeUnbakedHolds;
+    /// <summary>
+    /// After each swap-in, run Resources.UnloadUnusedAssets() (and wait it out).
+    /// The additive preload path leaks native memory per DISTINCT scene until
+    /// the process dies at a later scene integration (OOM); the sweep collects
+    /// the residue. Adds a short hitch per swap — toggle off to A/B.
+    /// </summary>
+    public static ConfigEntry<bool> PreloadUnloadUnusedAfterSwap;
+    /// <summary>
+    /// Conservative preload — disk cache warmup: during PREP, after the
+    /// first-level hold completes, a single background thread pre-reads the
+    /// collection's remaining level files into the OS page cache so the
+    /// in-round chained additive loads read from memory instead of disk.
+    /// Pure file IO (no Unity objects, one fixed read buffer, no process-
+    /// memory growth); any failure silently degrades. Hot-reloadable —
+    /// turning it off stops NEW warmups (an active one just finishes).
+    /// </summary>
+    public static ConfigEntry<bool> EnableDiskCacheWarmup;
+    /// <summary>
+    /// Warm the shared asset files alongside the level files — the trios
+    /// adjacent to the warmed scenes' build indices (sharedassets{N}.* ↔
+    /// level{N}; ~600MB for a full collection instead of ~4.1GB for every
+    /// shared file) plus resources.assets. Scene loads fault these in on
+    /// demand, so this closes the remaining I/O. The per-file debug log shows
+    /// the total; toggle off if the machine's RAM headroom is tight (the page
+    /// cache is kernel-reclaimable either way).
+    /// </summary>
+    public static ConfigEntry<bool> DiskWarmupWarmSharedFiles;
+    /// <summary>
+    /// Disk-cache warmup strategy. "follow-chain" (default): PREP head-warms
+    /// only the levels right after the first, then each completed chained
+    /// hold warms the level after next — pages get used within ~one level of
+    /// warming (low eviction risk, small steady page-cache footprint), and
+    /// local `lc` runs benefit too; the cost is mild background reads during
+    /// the round, landing in the disk-idle window between a completed hold
+    /// and the next hold starting. "prep-all": warm the whole collection
+    /// during PREP (zero in-round IO).
+    /// </summary>
+    public static ConfigEntry<string> DiskWarmupMode;
     // ── HUD ───────────────────────────────────────────────────────
     /// <summary>Show the two-line collection info HUD (top-right) during collection runs.</summary>
     public static ConfigEntry<bool> HudEnabled;
@@ -81,6 +156,20 @@ internal static class TwilightConfig
 
     // ── Debug ──────────────────────────────────────────────────────
     public static ConfigEntry<bool> VerboseNetLog;
+    /// <summary>
+    /// Verbose preload diagnostics: the per-hold/per-swap state dumps from the
+    /// lighting/OOM investigations — load-start table signatures, the
+    /// lighting-freeze detail (table IDs, mode, probes), probe-freeze
+    /// sampling/verification, the hold-sampling comparison, post-swap table
+    /// and memory signatures, sweep timings, and the engine-applied-rs suffix
+    /// on the activate timing line. Pure logging — behavior is identical
+    /// either way; warnings/errors always log, and `twi preload rs` (an
+    /// explicit command) always dumps.
+    /// </summary>
+    public static ConfigEntry<bool> DebugPreloadLogger;
+
+    /// <summary>Whether DebugPreloadLogger is on (null-safe before Init).</summary>
+    internal static bool PreloadDebugLogging => DebugPreloadLogger != null && DebugPreloadLogger.Value;
 
     /// <summary>The BepInEx config file, kept so <c>twi reload</c> can hot-reload it.</summary>
     private static ConfigFile _config;
@@ -117,6 +206,42 @@ internal static class TwilightConfig
         SubsegmentSampleInterval = config.Bind("Subsegment", "SampleInterval", 1f,
             "Subsegment sampling interval (seconds).");
 
+        EnableScenePreload = config.Bind("Features", "EnableScenePreload", true,
+            "Held-scene preload of the announced MULTI pick's first level during PREP (additive, dormant); " +
+            "round_start swaps it in instead of loading. Requires server-side pick_announced; SINGLE picks never preload.");
+        EnableChainedPreload = config.Bind("Features", "EnableChainedPreload", true,
+            "M3 chained preload: while playing a collection level, preload the NEXT level additively (dormant, " +
+            "low priority) and swap it in at level advance (frame-level transitions). Works for local lc runs too; " +
+            "adjacent same levels never preload (Empty-dwell path). Disable if in-round loading hurts framerate.");
+        EnableProbeFreeze = config.Bind("Features", "EnableProbeFreeze", true,
+            "Tinting fix: freeze the active light-probe coefficients to a uniform field (sampled at the player " +
+            "before the preload load) for the hold window; the swap writes the held scene's real coefficients back. " +
+            "Off = dynamic objects are tinted by the next level's probes during the hold (cosmetic, resolves at swap).");
+        ProbeFreezeUnbakedHolds = config.Bind("Features", "ProbeFreezeUnbakedHolds", true,
+            "Experimental: also freeze UNBAKED held scenes (all levels except Halloween/Steam). Without it their " +
+            "hold windows leave dynamic objects sampling zero coefficients — everything with light probes goes " +
+            "dark, player model included. The uniform value comes from the playing scene's structure (pre-load " +
+            "sample); the swap writes nothing back (scene activation re-applies the held scene's own values). " +
+            "Slight brightness offset possible; off = hold windows of unbaked levels stay dark.");
+        PreloadUnloadUnusedAfterSwap = config.Bind("Features", "PreloadUnloadUnusedAfterSwap", true,
+            "After each swap-in, run Resources.UnloadUnusedAssets() and wait it out. The additive preload path " +
+            "leaks memory per distinct scene until OOM; the sweep collects the residue. " +
+            "Adds a short hitch per swap — toggle off to A/B.");
+        EnableDiskCacheWarmup = config.Bind("Features", "EnableDiskCacheWarmup", true,
+            "Conservative preload: during PREP (after the first-level hold completes), a background thread pre-reads " +
+            "the collection's remaining level files into the OS page cache, so in-round chained loads read from memory " +
+            "instead of disk. Pure file IO — no scene/lighting interaction, no process-memory growth; any failure " +
+            "silently degrades. Hot via `twi reload`: off stops new warmups, an active run finishes.");
+        DiskWarmupWarmSharedFiles = config.Bind("Features", "DiskWarmupWarmSharedFiles", true,
+            "Warm the warmed scenes' adjacent sharedassets{N}.* trios + resources.assets alongside the level files " +
+            "(scene loads fault them in on demand; ~600MB for a full collection vs ~4.1GB for all shared files). " +
+            "Per-file sizes visible in the debug preload log; toggle off on machines with tight RAM headroom.");
+        DiskWarmupMode = config.Bind("Features", "DiskWarmupMode", "follow-chain",
+            "Disk-cache warmup strategy: 'follow-chain' = PREP head-warms the levels right after the first, then each " +
+            "completed chained hold warms the level after next (fresher pages, smaller steady footprint, also covers local " +
+            "lc runs; mild in-round background reads in the disk-idle window); 'prep-all' = warm the whole collection " +
+            "during PREP (zero in-round IO). Hot via `twi reload`.");
+
         ChatPopupEnabled = config.Bind("Chat", "PopupEnabled", true, "Briefly show the chat log (no input box) when a message arrives, then fade out.");
         ChatPopupSecs = config.Bind("Chat", "PopupSecs", 5f, "How long the passive chat popup stays visible before fading (seconds).");
         ChatToggleHotkey = config.Bind("Chat", "ToggleHotkey", "Ctrl+T",
@@ -128,11 +253,10 @@ internal static class TwilightConfig
         HudFontSize = config.Bind("HUD", "FontSize", 18, "HUD font size.");
 
         VerboseNetLog = config.Bind("Debug", "VerboseNetLog", false, "Log every sent/received WebSocket frame.");
-
-        // Persist immediately so the cfg file appears on disk on first launch
-        // (BepInEx otherwise only writes it on shutdown) — lets the user edit it
-        // without having to quit first.
-        try { config.Save(); } catch (System.Exception ex) { Plugin.Logger.LogWarning("[TwilightConfig] failed to save cfg: " + ex.Message); }
+        DebugPreloadLogger = config.Bind("Debug", "DebugPreloadLogger", false,
+            "Verbose preload diagnostic logging (per-hold/per-swap lighting, probe, lightmap-table and memory state " +
+            "dumps, sweep timings). Pure logging — behavior is identical either way; warnings/errors always log, " +
+            "and `twi preload rs` always dumps. Hot-reloadable via `twi reload`.");
     }
 
     /// <summary>

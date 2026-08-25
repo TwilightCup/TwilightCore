@@ -220,6 +220,9 @@ internal sealed class MatchController
                 _session.BReady = msg.GetBool("b_ready");
                 // PREP-side !ready / cancel-ready flips the lock (§2.1).
                 UpdateMatchModeFromSession();
+                // Own !ready is the held-scene preload trigger (ready-lock then
+                // protects the dormant additive scene from manual launches).
+                NotifyPreloadManager();
                 break;
             case Msg.PhaseChange:
                 HandlePhase(msg);
@@ -263,6 +266,15 @@ internal sealed class MatchController
                 // The server already emits human-readable system messages for these;
                 // no local echo, so Twilight lines stay verbatim identical on every client.
                 break;
+            case Msg.PickAnnounced:
+                HandlePickAnnounced(msg);
+                break;
+            case Msg.PreloadState:
+                // Both seats' preload progress — the referee UI consumes this;
+                // locally only worth a line at verbose logging.
+                if (TwilightConfig.VerboseNetLog.Value)
+                    Plugin.Logger.LogInfo($"[Twilight] preload_state: a={msg.GetString("a_status")} b={msg.GetString("b_status")}");
+                break;
             case Msg.Error:
                 Plugin.Logger.LogWarning($"[Twilight] server error {msg.GetInt("code")}: {msg.GetString("msg")}");
                 // Old-server breaker: a 400 right after a subsegment send means the
@@ -300,6 +312,32 @@ internal sealed class MatchController
         // No chat line on →PREP: live transitions get the server's prep.started
         // broadcast (Twilight), and reconnects into PREP get a targeted
         // sender=System hint in the handshake (both arrive as Msg.System).
+        NotifyPreloadManager();
+    }
+
+    /// <summary>
+    /// A <c>pick_announced</c> arrived: the referee confirmed a pick and the
+    /// server pushed the collection to the seats ahead of round_start (需求-合集
+    /// 提前下发与预载门控.md R1). PREVIEW only — <c>round_start</c> stays the
+    /// authoritative pick/collection source and is NOT touched here; the
+    /// preloader uses the announcement to start holding the first MULTI level.
+    /// </summary>
+    private void HandlePickAnnounced(Dictionary<string, object> msg)
+    {
+        var pickDict = msg.GetDict("pick");
+        var pick = PickSnapshot.From(pickDict);
+        Plugin.Logger.LogInfo($"[Twilight] pick_announced: {pick.Code} - {pick.Name} type={pick.Type} retry={pick.RetryCount}");
+        _chat.DisplaySystem($"Pick announced: {pick.Code} - {pick.Name}", "prep");
+
+        var preload = Preload.ScenePreloadManager.Instance;
+        preload?.OnPickAnnounced(pickDict, msg.GetDict("collection"));
+    }
+
+    /// <summary>Push readiness/phase changes to the held-scene preloader (no-op when absent).</summary>
+    private void NotifyPreloadManager()
+    {
+        var preload = Preload.ScenePreloadManager.Instance;
+        preload?.OnReadyOrPhaseChanged();
     }
 
     private void HandleRoundStart(Dictionary<string, object> msg)

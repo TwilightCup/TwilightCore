@@ -21,6 +21,13 @@ namespace TwilightCore;
 ///   twi sim forfeit [reason]    — force-forfeit (multi_exit | single_exit_0_valid)
 ///   twi sim status              — simulated-timer state
 ///   twi subseg status           — subsegment tracker state (MULTI live-gap tracking)
+///   twi preload hold &lt;levelId&gt;  — M1: additively hold a level's scene dormant (from the main menu)
+///   twi preload swap            — M1: swap the held scene in (the GO sequence, no match flow)
+///   twi preload drop            — discard the held scene
+///   twi preload rs              — lightmap/render-state table dump (to LogOutput.log)
+///   twi preload mach            — machine joint-state dump for the current level
+///   twi preload warm &lt;id|all&gt;   — pre-read level files into the OS page cache (debug/A-B)
+///   twi preload status          — held-scene preloader state
 ///
 /// Connection never happens automatically — run <c>twi connect &lt;host&gt; [port]</c>
 /// after setting <c>Account.Username/Password</c> in the cfg. Progress (login → WS →
@@ -48,7 +55,14 @@ internal static class TwilightCommands
         "\tsim complete [final_ms] - force-complete the project\r\n" +
         "\tsim forfeit [multi_exit|single_exit_0_valid] - force-forfeit\r\n" +
         "\tsim status - simulated timer state\r\n" +
-        "\tsubseg status - subsegment tracker state (MULTI live-gap tracking)";
+        "\tsubseg status - subsegment tracker state (MULTI live-gap tracking)\r\n" +
+        "\tpreload hold <levelId> - M1: hold a level scene dormant (main menu only)\r\n" +
+        "\tpreload swap - M1: swap the held scene in (no match flow)\r\n" +
+        "\tpreload drop - discard the held scene\r\n" +
+        "\tpreload rs - dump lightmap/render-state tables to LogOutput.log\r\n" +
+        "\tpreload mach - dump the current level's machine/joint state\r\n" +
+        "\tpreload warm <levelId|all> - pre-read level files into the OS page cache (debug/A-B)\r\n" +
+        "\tpreload status - held-scene preloader state";
 
     public static void Init(TwilightClient client, MatchSession session, SimulatedTimer timer, MatchController match)
     {
@@ -98,6 +112,9 @@ internal static class TwilightCommands
                 return;
             case "subseg":
                 HandleSubseg(parts);
+                return;
+            case "preload":
+                HandlePreload(parts);
                 return;
             default:
                 PrintHelp();
@@ -181,6 +198,58 @@ internal static class TwilightCommands
         TwilightLog.Print(tracker != null
             ? tracker.StatusString()
             : "twi subseg: tracker not initialised.");
+    }
+
+    /// <summary>
+    /// M1 prototype commands for the held-scene preloader (激进预载held-scene
+    /// 方案调研.md §8 M1): manually exercise hold → swap → drop from the main
+    /// menu without a match flow, to verify the HumanAPI side-effect / flash-frame
+    /// / additive-semantics risks (调研 §7 1-3) before wiring M2 into real rounds.
+    /// </summary>
+    private static void HandlePreload(string[] parts)
+    {
+        var pre = Preload.ScenePreloadManager.Instance;
+        if (pre == null) { TwilightLog.Print("twi preload: preloader not initialised."); return; }
+        if (parts.Length < 2) { TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach|warm <levelId|all>>"); return; }
+
+        switch (parts[1].ToLowerInvariant())
+        {
+            case "hold":
+                if (parts.Length < 3) TwilightLog.Print("twi preload hold <levelId>   (e.g. Aztec or a workshop id; menu or in-level)");
+                else pre.DebugHold(parts[2]);
+                return;
+            case "swap":
+                pre.DebugSwap();
+                return;
+            case "drop":
+                pre.ForceDrop("twi preload drop");
+                TwilightLog.Print("twi preload: drop requested.");
+                return;
+            case "status":
+                TwilightLog.Print(pre.StatusString());
+                return;
+            case "rs":
+            {
+                string dump = pre.RenderStateString();
+                TwilightLog.Print(dump);
+                Plugin.Logger.LogInfo("[Preload] rs dump:\n" + dump);   // into LogOutput.log for easy copying
+                return;
+            }
+            case "mach":
+                pre.DumpMachines();
+                TwilightLog.Print("twi preload: machine state dumped to LogOutput.log.");
+                return;
+            case "warm":
+                // "all" is matched literally before any canonicalisation; a level id
+                // is canonicalised inside WarmLevel (the console lowercases the line).
+                if (parts.Length < 3) TwilightLog.Print("twi preload warm <levelId|all>   (e.g. Aztec, a workshop id, or all)");
+                else if (parts[2] == "all") Preload.DiskWarmup.WarmAllLevels();
+                else Preload.DiskWarmup.WarmLevel(parts[2]);
+                return;
+            default:
+                TwilightLog.Print("twi preload <hold <levelId>|swap|drop|status|rs|mach|warm <levelId|all>>");
+                return;
+        }
     }
 
     private static void PrintStatus()

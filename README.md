@@ -37,6 +37,16 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | 断线指数退避（重连沿用上次 `twi connect` 的地址） |
 | `Features.EnableReadyLock` | `true` | 准备阶段 `!ready` 之后、以及倒计时阶段锁定手动进关（未 ready 前可自由练习） |
 | `Features.EnableSimTimer` | `true` | 启用模拟计时器上报 |
+| `Features.SameLevelReloadMinDwell` | `1` | 合集连续进同一关时绕道 `Empty` 场景的最短停留秒数（视觉上区分两次尝试）；`0` 关闭绕道 |
+| `Features.EnableMenuFallLimit` | `true` | 连接比赛服期间限制主菜单小人下落速度（防坠落） |
+| `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
+| `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
+| `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
+| `Features.ProbeFreezeUnbakedHolds` | `true` | **未烘焙关保持期全黑修复（实验性）**：hold 非烘焙探针的关（Halloween/Steam 以外全部）时，玩家落在其探针凸包内会让所有动态物体（含玩家模型）采到全零系数、完全失去环境光。此项把冻结同样应用到未烘焙组——值取加载前游玩关结构的实采样，换入**不写回**（场景激活时引擎自会重填，避免历史上的过曝级联）。可能存在轻微亮度偏移；关闭则保持期维持全黑 |
+| `Features.PreloadUnloadUnusedAfterSwap` | `true` | **换入后清扫**：每次换入完成、旧场景卸载后执行 `Resources.UnloadUnusedAssets()` 并等待（约 50-145ms）。additive 预载路径会按不同场景累积泄漏 native 资产，长合集（约 12 个不同场景起）最终在场景加载时 OOM 硬崩；清扫即修复（代价是每次换入多一次短卡顿），关闭可做 A/B 对比 |
+| `Features.EnableDiskCacheWarmup` | `true` | **保守预载（磁盘缓存预热）**：PREP 期首关 hold 完成后，单一后台线程把合集后续关卡的磁盘文件预读进 OS 页缓存——比赛中的链式预载读盘变内存读，仅剩反序列化 CPU 负担。纯文件 IO（不触碰场景/光照、单块固定缓冲不增进程内存），任何失败静默退化为现状；`twi reload` 热切（关闭只停新预热，进行中的跑完） |
+| `Features.DiskWarmupMode` | `follow-chain` | 预热策略：`follow-chain` = PREP 只头暖首关后两关，之后每个链式 hold 完成即预热"下下关"（页面更鲜活、稳态占用小、本地 `lc` 练习局同样生效；局内有温和后台读，落在磁盘空闲窗口）；`prep-all` = PREP 一次性暖全部后续关卡（局内零磁盘 IO）。`twi reload` 热切 |
+| `Features.DiskWarmupWarmSharedFiles` | `true` | 磁盘缓存预热时连同共享资产一并预热：按目标关 build index **邻接裁剪**的 `sharedassets{N}.*` 三件套 + `resources.assets`（全合合约 600MB 量级，而非全部 shared 文件的 ~4.1GB；场景表兜底/`warm all` 时退化为全量）；逐文件体积见 `Debug.DebugPreloadLogger` 日志，机器内存吃紧可关（页缓存本就由内核管理、可回收） |
 | `Features.EnableSubsegment` | `true` | 多关回合 subsegment 实时时间差追踪（见下节；需服务端已升级 + TwilightTimer 真实计时器在运行） |
 | `Subsegment.PlaneRadius` | `50` | 检测平面半径（米）：对方采样点处垂直于其运动向量的虚拟平面范围 |
 | `Subsegment.MinMove` | `0.5` | 采样间隔位移小于该值（米）则该样本不生成检测平面（近乎静止） |
@@ -48,6 +58,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `HUD.TextColor` | `FFD94C` | HUD 文本颜色，hex 编码（`RRGGBB` 或 `RRGGBBAA`，可带 `#`） |
 | `HUD.FontSize` | `18` | HUD 字号（与 TwilightTimer 计时器默认一致） |
 | `Debug.VerboseNetLog` | `false` | 打印每条收发帧 |
+| `Debug.DebugPreloadLogger` | `false` | 预载详细诊断日志：逐 hold/换入的光照探针、光照贴图表签名、内存快照、清扫耗时等状态转储（排查光照/内存问题用）。纯日志开关，行为完全一致；警告与错误不受影响，`twi preload rs` 始终可用。可用 `twi reload` 热切换 |
 
 ## 控制台命令
 
@@ -77,6 +88,13 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi sim forfeit [multi_exit\|single_exit_0_valid]` | 模拟弃权 |
 | `twi sim status` | 模拟计时器状态 |
 | `twi subseg status` | subsegment 追踪器状态（回合/关卡/采样与平面数/最近时间差） |
+| `twi preload hold <levelId>` | **M1/M3 验证**：把指定关卡以 additive+休眠方式驻留（不经比赛流程）；主菜单或游玩中的关卡内均可（后者即链式预载形态）。id 同合集配置：内置关用显示名（`Aztec`、`Steam`…，区分大小写）或已订阅的 workshop id |
+| `twi preload swap` | **M1/M3 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
+| `twi preload drop` | 丢弃驻留场景并卸载 |
+| `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
+| `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表逐条纹理标识/逐场景 renderer lightmapIndex 直方图/LOD 层状态/进程内存），排查换入光照与内存问题用 |
+| `twi preload mach` | 转储当前关全部机器的关节/物理状态（AngularJoint/Lever/Catapult/铰链角度与驱动目标等），机器异常时当场运行 |
+| `twi preload warm <levelId\|all>` | **保守预载验证**：手动把指定关卡（或 `all` = 全部场景文件 + 共享文件）预读进 OS 页缓存，不经比赛流程（调试与冷/热缓存 A/B 用）；进度见 `twi preload status` 的 `warm:` 行 |
 
 聊天：
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
@@ -134,6 +152,57 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 }
 ```
 
+## 关卡预载（held-scene，仅 MULTI）
+
+`Features.EnableScenePreload` 开启时，插件会在 PREP 阶段把裁判选定图（**仅 MULTI**）的
+**首关场景**提前加载进内存（additive、全部根物体休眠：不渲染/无物理/无音频），
+`round_start` 瞬间只做轻量"换入"（激活场景 + 复刻游戏自己的
+`AfterLoad` 编排），实现**倒计时结束即在关卡里**。工作方式：
+
+- **触发**：收到服务端 `pick_announced`（裁判选图即提前下发合集）+ 本方 `!ready`，
+  且玩家在主菜单。ready-lock 生效后手动进关被锁，预载不会被意外破坏。
+- **上报**：预载状态机向服务端报 `preload_report`（`in_progress`/`done`/`failed`/`na`）；
+  SINGLE 选图固定报 `na`。服务端据此做开局门控（双方预载完成才自动倒计时）。
+- **降级**：预载是优化不是依赖——任何失败（未订阅、下载失败、场景异常、改图）
+  自动回退现有标准加载路径，行为与未开预载完全一致；服务端不支持
+  `pick_announced` 时插件完全闲置（WS 连接会带 `cap=preload1` 能力参数，旧服务端忽略）。
+- **链式预载（`Features.EnableChainedPreload`）**：进入某一关（`PlayingLevel`）后，
+  后台以同样的休眠方式预载合集**下一关**（低优先级分帧加载），过关时直接换入——
+  关间过渡从数秒加载变为帧级切换，计时器边沿/上报不受影响。相邻同关
+  （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
+  预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
+  保持期染色：烘焙探针的关（如 Halloween/Steam）由 `Features.EnableProbeFreeze`
+  修复（保持期内探针系数冻结为玩家处采样值，换入时写回）；未烘焙关由
+  `Features.ProbeFreezeUnbakedHolds` 处理（玩家落在下一关探针凸包内时表现为
+  动态物体全黑、凸包外为轻微染色，两者同源，冻结后消除；换入不写回）。
+  换入完成后自动执行
+  `Resources.UnloadUnusedAssets()` 清扫无引用资产（`Features.
+  PreloadUnloadUnusedAfterSwap`）——additive 预载路径会按不同场景累积泄漏
+  native 资产，长合集最终 OOM 硬崩（已定案），清扫即修复。完整问题清单与
+  修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
+- **保守预载（磁盘缓存预热，`Features.EnableDiskCacheWarmup`）**：与链式预载互补——
+  单一后台线程（低优先级、固定 1MB 复用缓冲）把关卡的磁盘文件流式读一遍丢弃，装进
+  OS 页缓存（内核管理、可回收，不占进程内存）；此后链式 hold 的读盘即变内存读，仅剩
+  反序列化/集成的 CPU 负担。策略由 `Features.DiskWarmupMode` 选择：**follow-chain**
+  （默认）——PREP 期（首关 hold 完成后）只头暖第 2-3 关，之后每当链式 hold N+1 完成，
+  趁磁盘空闲窗口（上一 hold 已完成、下一 hold 未开始）预热第 N+2 关：页面从预热到
+  使用约隔一关时长（几乎不会被逐出）、稳态占用小、本地 `lc` 练习局同样生效，代价是
+  局内有温和的后台读；**prep-all**——PREP 期一次性暖全部后续关卡（局内零磁盘 IO）。
+  开局（`round_start` 换入）或改图即协作式停止（当前文件读完即止）。内置关文件经
+  引擎 build-settings 场景表映射（真机实证 43/43 场景可映射；映射失败自动退化为预热
+  全部 `level*` 文件），共享资产按场景 build index 邻接裁剪（`sharedassets{N}.*`
+  三件套，全合约 600MB 而非全量 4.1GB），workshop 关只读其加载路径真正读的两个文件
+  （`metadata.json` + `data` 包），未安装项跳过、绝不触发下载。任何失败静默退化为
+  现状。手动触发与冷/热缓存 A/B：`twi preload warm <levelId|all>`；`twi preload
+  status` 的 `warm:` 行含模式与进度。
+- **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
+- 调试：`twi preload hold/swap/drop/status/rs/mach` 可在不连服务端的情况下手工验证
+  驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap
+  即 M3 链式换入的最小复现，如 `twi preload hold Siege` 后换入验证投石机）。
+
+> 完整设计见 `ignored/激进预载held-scene方案调研.md`；服务端侧（`pick_announced`
+> 提前下发 + 预载门控）见 `ignored/需求-合集提前下发与预载门控.md`（后端实现后生效）。
+
 ## 端到端联调（服务端已存在）
 
 1. 起后端：`cd TwilightCupBackend && uv run uvicorn twilightcupbackend.main:app --reload`（需本地 MongoDB）。
@@ -146,6 +215,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 ## 已知限制 / 待办
 
 - **真实计时器**：未实现（本期用 `SimulatedTimer` 占位）。
+- **预载端到端**：held-scene 预载依赖服务端 `pick_announced`/门控（后端 R1/R2）；
+  后端上线前仅可用 `twi preload …` 手工验证，正式比赛回合不受影响（自动走标准加载）。
 - **重连重载合集**：回合中断线重连只补传双方状态快照，不会重新下发/加载合集配置
   （服务端 `reconnect_resync` 不含 pick/collection）；游戏崩溃后需手动重进。
   同一进程内的临时断连不会停止计时器，断线期间产生的上报会缓存并在重连后补发

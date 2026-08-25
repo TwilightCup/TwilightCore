@@ -172,8 +172,13 @@ public class TwilightClient : MonoBehaviour
         string seat = TwilightConfig.Seat.Value;
         seat = seat == null ? "" : seat.Trim();
         string path = "/ws/" + _token;
+        // Query params: explicit seat override (optional) + the preload capability
+        // flag (需求-合集提前下发与预载门控.md R3.3): servers that implement the
+        // preload start gate only wait for reports from seats declaring `preload1`;
+        // older servers ignore unknown query params entirely.
+        path += "?cap=preload1";
         if (!string.IsNullOrEmpty(seat))
-            path += "?seat=" + seat;
+            path += "&seat=" + seat;
         TwilightLog.Print($"[Twilight] Connecting {WsScheme}://{Host}:{Port}{path}");
         _ws.Connect(Host, Port, UseTls, path);
     }

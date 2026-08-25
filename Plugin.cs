@@ -81,6 +81,14 @@ public class Plugin : BaseUnityPlugin
         DontDestroyOnLoad(netGo);
         var client = netGo.AddComponent<TwilightClient>();
 
+        // Held-scene preloader: additively holds the announced MULTI pick's first
+        // level during PREP (dormant) and swaps it in at round_start instead of a
+        // full launch (激进预载held-scene方案调研.md M1+M2). Idle without a
+        // pick_announced-capable server; `twi preload …` exercises it manually.
+        var preloadGo = new GameObject("TwilightPreload");
+        DontDestroyOnLoad(preloadGo);
+        preloadGo.AddComponent<Preload.ScenePreloadManager>().Init(client);
+
         // Match state + round reporter + controller. The reporter is resolved
         // lazily by the controller: a registered timer provider (real timer
         // plugin, self-registered via TimerProviderRegistry — necessarily AFTER
