@@ -167,9 +167,20 @@ internal static class TwilightConfig
     /// explicit command) always dumps.
     /// </summary>
     public static ConfigEntry<bool> DebugPreloadLogger;
+    /// <summary>
+    /// Verbose subsegment diagnostics: tracker state transitions, wake-up
+    /// detection, samples sent and opponent samples/planes received, crossing
+    /// checks/hits, completion sync decisions, and reasons a round is idle.
+    /// Pure logging — behavior is identical either way; warning/error and the
+    /// always-on subsegment lines still log.
+    /// </summary>
+    public static ConfigEntry<bool> DebugSubsegmentLogger;
 
     /// <summary>Whether DebugPreloadLogger is on (null-safe before Init).</summary>
     internal static bool PreloadDebugLogging => DebugPreloadLogger != null && DebugPreloadLogger.Value;
+
+    /// <summary>Whether DebugSubsegmentLogger is on (null-safe before Init).</summary>
+    internal static bool SubsegmentDebugLogging => DebugSubsegmentLogger != null && DebugSubsegmentLogger.Value;
 
     /// <summary>The BepInEx config file, kept so <c>twi reload</c> can hot-reload it.</summary>
     private static ConfigFile _config;
@@ -257,6 +268,11 @@ internal static class TwilightConfig
             "Verbose preload diagnostic logging (per-hold/per-swap lighting, probe, lightmap-table and memory state " +
             "dumps, sweep timings). Pure logging — behavior is identical either way; warnings/errors always log, " +
             "and `twi preload rs` always dumps. Hot-reloadable via `twi reload`.");
+        DebugSubsegmentLogger = config.Bind("Debug", "DebugSubsegmentLogger", false,
+            "Verbose subsegment diagnostic logging (tracker state, wake-up detection, samples sent/received, " +
+            "plane creation and crossing checks, hits, completion sync decisions, and idle reasons). Pure logging — " +
+            "behavior is identical either way; warnings/errors and the normal subsegment status lines always log. " +
+            "Hot-reloadable via `twi reload`.");
     }
 
     /// <summary>

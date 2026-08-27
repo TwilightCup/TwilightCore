@@ -87,6 +87,8 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     private readonly Queue<string> _recentGaps = new Queue<string>(8);
     private bool _disabledByServer;      // old server: 400 on our subsegment sends
     private bool _providerMissingLogged; // log the idle reason once per round
+    private bool _wakeBlockedLogged;     // one-shot debug for an Armed level waiting for wake-up
+    private bool _humanMissingLogged;    // one-shot debug for an active round with no Localplayer
     private float _lastSubsegSendRealtime = -1f;
 
     // ── Wiring ───────────────────────────────────────────────────────
@@ -136,12 +138,29 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _roundId = roundId;
         _disabledByServer = false;
         _providerMissingLogged = false;
-        Log($"round {roundId}: tracking armed (MULTI).");
+        _wakeBlockedLogged = false;
+        _humanMissingLogged = false;
+        if (Enabled)
+        {
+            Log($"round {roundId}: tracking armed (MULTI).");
+        }
+        else
+        {
+            Log($"round {roundId}: subsegment tracking DISABLED (Features.EnableSubsegment=false).");
+        }
+        var pickType = MatchSession.Instance?.Pick?.Type;
+        DebugLog($"round start: enabled={Enabled}, provider={(TimerProviderRegistry.Current != null ? "registered" : "MISSING")}, pickType={pickType}, isMulti={pickType == PickType.Multi}, round={roundId}");
     }
 
     /// <summary>Drop everything (round over / match end / terminal disconnect / ingestion failure).</summary>
     public void ResetRound()
     {
+        if (DebugLogging)
+        {
+            int planes = 0;
+            foreach (var kv in _planesByLevel) planes += kv.Value.Count;
+            DebugLog($"reset: state {_state}->{SegState.Idle}, level {_levelIndex}, planes {planes}, oppSeqs {_lastOppSeqByLevel.Count}");
+        }
         _state = SegState.Idle;
         _levelIndex = -1;
         _seq = 0;
@@ -152,16 +171,25 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _lastOppSeqByLevel.Clear();
         _recentGaps.Clear();
         _lastSubsegSendRealtime = -1f;
+        _wakeBlockedLogged = false;
+        _humanMissingLogged = false;
     }
 
     /// <summary>A level of the collection launched: arm for its first wake-up.</summary>
     public void NotifyLevelStarted(int levelIndex)
     {
-        if (!Enabled) return;
+        if (!Enabled)
+        {
+            DebugLog($"level {levelIndex} started ignored: Features.EnableSubsegment=false");
+            return;
+        }
         _levelIndex = levelIndex;
         _state = SegState.Armed;
         _seq = 0;
         _hasLastSamplePos = false;
+        _wakeBlockedLogged = false;
+        _humanMissingLogged = false;
+        DebugLog($"level {levelIndex} started -> Armed (round={_roundId})");
     }
 
     /// <summary>
@@ -173,8 +201,13 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     /// </summary>
     public void NotifyLevelCompleted(int levelIndex, bool skipped)
     {
-        if (!Enabled) return;
+        if (!Enabled)
+        {
+            DebugLog($"level {levelIndex} completed ignored: Features.EnableSubsegment=false");
+            return;
+        }
         bool wasRecording = _state == SegState.Recording;
+        DebugLog($"level completed {levelIndex} skipped={skipped} wasRecording={wasRecording} state={_state}");
         if (wasRecording && !skipped)
         {
             var human = Human.Localplayer;
@@ -182,6 +215,10 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             {
                 Vector3 pos = human.transform.position;
                 EmitSample(pos, DisplacementSinceLastSample(pos));
+            }
+            else
+            {
+                DebugLog($"level {levelIndex} completed without a Localplayer — final sample skipped");
             }
             SendCompletionSync();
         }
@@ -198,9 +235,24 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         // A 400 shortly after a subsegment send means the server rejected the
         // message itself (unknown type = not upgraded); other 400s (e.g. a bad
         // ! command) never follow a subsegment send and must not trip this.
-        if (code != 400 || _disabledByServer || _lastSubsegSendRealtime < 0f) return;
-        if (Time.realtimeSinceStartup - _lastSubsegSendRealtime > 3f) return;
+        if (code != 400)
+        {
+            DebugLog($"server error {code} ignored (not subsegment-related)");
+            return;
+        }
+        if (_disabledByServer) return;
+        if (_lastSubsegSendRealtime < 0f)
+        {
+            DebugLog("server 400 before any subsegment send — ignored");
+            return;
+        }
+        if (Time.realtimeSinceStartup - _lastSubsegSendRealtime > 3f)
+        {
+            DebugLog("server 400 too far from a subsegment send — ignored");
+            return;
+        }
         _disabledByServer = true;
+        DebugLog("server 400 right after a subsegment send — tripping old-server breaker");
         Log("server rejected subsegment messages (not upgraded?) — sampling disabled until next round.");
     }
 
@@ -209,29 +261,52 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     /// <summary>Opponent sample relayed by the server: add its virtual plane.</summary>
     public void OnOpponentSample(Dictionary<string, object> msg)
     {
-        if (!Enabled || msg == null) return;
-        if (_roundId == null || msg.GetString("round_id") != _roundId) return;
+        if (msg == null) return;
+        if (!Enabled)
+        {
+            DebugLog($"opponent sample ignored: Features.EnableSubsegment=false");
+            return;
+        }
+        if (_roundId == null || msg.GetString("round_id") != _roundId)
+        {
+            DebugLog($"opponent sample ignored: round mismatch (msg={msg.GetString("round_id")}, local={_roundId})");
+            return;
+        }
 
         int level = msg.GetInt("level_index", -1);
         int seq = msg.GetInt("seq", -1);
-        if (level < 0 || seq < 0) return;
+        if (level < 0 || seq < 0)
+        {
+            DebugLog($"opponent sample ignored: bad level/seq ({level}/{seq})");
+            return;
+        }
 
         var seen = _seenSeqByLevel.TryGetValue(level, out var set) ? set : _seenSeqByLevel[level] = new HashSet<int>();
-        if (!seen.Add(seq)) return; // reconnect replay / duplicate relay
+        if (!seen.Add(seq))
+        {
+            DebugLog($"opponent sample duplicate ignored: L{level} seq{seq}");
+            return; // reconnect replay / duplicate relay
+        }
         _lastOppSeqByLevel[level] = seq;
 
         float dx = msg.GetFloat("dx"), dy = msg.GetFloat("dy"), dz = msg.GetFloat("dz");
         var dir = new Vector3(dx, dy, dz);
-        if (dir.sqrMagnitude < 1e-8f) return; // stationary sample: stored server-side, no plane
+        if (dir.sqrMagnitude < 1e-8f)
+        {
+            DebugLog($"opponent stationary sample stored: L{level} seq{seq} t={msg.GetLong("t_ms")} ms (no plane)");
+            return; // stationary sample: stored server-side, no plane
+        }
 
         var planes = _planesByLevel.TryGetValue(level, out var list) ? list : _planesByLevel[level] = new List<Plane>();
+        var pos = new Vector3(msg.GetFloat("px"), msg.GetFloat("py"), msg.GetFloat("pz"));
         planes.Add(new Plane
         {
             LevelIndex = level,
             Seq = seq,
-            Pos = new Vector3(msg.GetFloat("px"), msg.GetFloat("py"), msg.GetFloat("pz")),
+            Pos = pos,
             Normal = dir.normalized,
         });
+        DebugLog($"opponent plane added: L{level} seq{seq} t={msg.GetLong("t_ms")} ms pos=({pos.x:0.##},{pos.y:0.##},{pos.z:0.##}) dir=({dx:0.##},{dy:0.##},{dz:0.##}) totalPlanes={planes.Count}");
     }
 
     /// <summary>Live gap broadcast (our crossing or the opponent's): log for status/debug.</summary>
@@ -243,6 +318,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
                       $"(owner {msg.GetString("seat")} @ {msg.GetLong("sample_ms")} ms) " +
                       $"gap {msg.GetLong("gap_ms")} ms";
         Plugin.Logger.LogInfo($"[Subsegment] {line}");
+        DebugLog($"gap received: {line} round={msg.GetString("round_id")}");
         _recentGaps.Enqueue(line);
         while (_recentGaps.Count > 8) _recentGaps.Dequeue();
     }
@@ -252,6 +328,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     {
         var sb = new StringBuilder();
         sb.Append("subsegment: ").Append(Enabled ? "enabled" : "DISABLED (Features.EnableSubsegment=false)");
+        if (DebugLogging) sb.Append(" | debug logging ON");
         if (_disabledByServer) sb.Append(" | halted by server (old backend?)");
         sb.Append("\nround: ").Append(_roundId ?? "(none)")
           .Append("  state: ").Append(_state)
@@ -299,12 +376,24 @@ internal sealed class SubsegmentTracker : MonoBehaviour
                       && CollectionManager.Instance.IsInCollectionRun;
         if (!active)
         {
-            if (_state != SegState.Idle) ResetRound(); // self-heal (explicit resets also exist)
+            if (_state != SegState.Idle)
+            {
+                DebugLog($"inactive -> reset: phase={session?.Phase}, pickType={session?.Pick?.Type}, inRun={CollectionManager.Instance != null && CollectionManager.Instance.IsInCollectionRun}");
+                ResetRound(); // self-heal (explicit resets also exist)
+            }
             return;
         }
 
         var human = Human.Localplayer;
-        if (human == null || !human) return; // menu / loading — Unity fake-null after scene changes
+        if (human == null || !human)
+        {
+            if (!_humanMissingLogged)
+            {
+                _humanMissingLogged = true;
+                DebugLog("active round, but Localplayer is null/fake-null — waiting for player/scene");
+            }
+            return; // menu / loading — Unity fake-null after scene changes
+        }
 
         // Sample and hit timestamps come from the real timer's timeline; with
         // no provider registered there is nothing valid to report (the
@@ -338,8 +427,16 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         // dwell) can't arm a segment; the wake itself is the character leaving
         // the limp states (Spawning/Unconscious/Dead) — the spawn fall lands,
         // 3 s of unconsciousness elapse, then state flips to Fall.
-        if (Game.instance == null || Game.instance.state != GameState.PlayingLevel) return;
-        if (IsLimp(human.state)) return;
+        if (Game.instance == null || Game.instance.state != GameState.PlayingLevel)
+        {
+            LogWakeBlocked($"game state={Game.instance?.state.ToString() ?? "null"} not PlayingLevel");
+            return;
+        }
+        if (IsLimp(human.state))
+        {
+            LogWakeBlocked($"human state={human.state} still limp");
+            return;
+        }
 
         _state = SegState.Recording;
         Vector3 pos = human.transform.position;
@@ -349,6 +446,14 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _seq = 0;
         EmitSample(pos, Vector3.zero); // first sample: no displacement interval yet
         Log($"level {_levelIndex}: wake-up detected — recording.");
+        DebugLog($"level {_levelIndex}: wake-up -> Recording, pos=({pos.x:0.##},{pos.y:0.##},{pos.z:0.##}), t={CurrentTotalMs()} ms");
+    }
+
+    private void LogWakeBlocked(string reason)
+    {
+        if (_wakeBlockedLogged || !DebugLogging) return;
+        _wakeBlockedLogged = true;
+        DebugLog($"armed L{_levelIndex} still waiting for wake-up ({reason})");
     }
 
     private void SampleIfDue(Vector3 pos)
@@ -378,6 +483,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
                 // are already past (or inside) never fires.
                 p.PrevD = d;
                 p.Armed = true;
+                DebugLog($"plane armed: L{p.LevelIndex} seq{p.Seq} d={d:0.###} pos=({p.Pos.x:0.##},{p.Pos.y:0.##},{p.Pos.z:0.##}) normal=({p.Normal.x:0.##},{p.Normal.y:0.##},{p.Normal.z:0.##})");
                 continue;
             }
             if (!p.Hit && p.PrevD < 0f && d >= 0f)
@@ -386,7 +492,12 @@ internal sealed class SubsegmentTracker : MonoBehaviour
                 if (lateral.sqrMagnitude <= radiusSq)
                 {
                     p.Hit = true;
+                    DebugLog($"crossing detected: L{p.LevelIndex} seq{p.Seq} d={d:0.###} lateral={Mathf.Sqrt(lateral.sqrMagnitude):0.###} radius={radius} t={CurrentTotalMs()} ms");
                     SendHit(p);
+                }
+                else
+                {
+                    DebugLog($"crossing outside radius: L{p.LevelIndex} seq{p.Seq} lateral={Mathf.Sqrt(lateral.sqrMagnitude):0.###} > radius={radius} — not reported");
                 }
             }
             p.PrevD = d;
@@ -426,20 +537,36 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     private void SendCompletionSync()
     {
         if (!_lastOppSeqByLevel.TryGetValue(_levelIndex, out int oppSeq))
+        {
+            DebugLog($"completion sync skipped L{_levelIndex}: opponent has no samples for this level");
             return; // opponent never sampled this level
+        }
 
         var snap = LeaderboardApi.GetSnapshot();
         string localSeat = LeaderboardApi.GetLocalSeat();
-        if (snap == null || localSeat == null) return;
+        if (snap == null || localSeat == null)
+        {
+            DebugLog($"completion sync skipped L{_levelIndex}: snapshot={snap != null}, localSeat={localSeat}");
+            return;
+        }
         var opp = snap.PlayerA != null && snap.PlayerA.Seat == localSeat ? snap.PlayerB : snap.PlayerA;
-        if (opp == null || opp.CurrentLevelIndex <= _levelIndex) return;
+        if (opp == null || opp.CurrentLevelIndex <= _levelIndex)
+        {
+            DebugLog($"completion sync skipped L{_levelIndex}: opponent={opp?.Seat ?? "null"} currentLevel={opp?.CurrentLevelIndex ?? -1} (not past level)");
+            return;
+        }
 
         // Skip locally if we already crossed that plane for real — the server
         // would drop the duplicate hit anyway.
         if (_planesByLevel.TryGetValue(_levelIndex, out var planes))
             for (int i = planes.Count - 1; i >= 0; i--)
-                if (planes[i].Seq == oppSeq && planes[i].Hit) return;
+                if (planes[i].Seq == oppSeq && planes[i].Hit)
+                {
+                    DebugLog($"completion sync skipped L{_levelIndex}: already crossed opponent seq{oppSeq}");
+                    return;
+                }
 
+        DebugLog($"completion sync sending: L{_levelIndex} seq{oppSeq} t={CurrentTotalMs()} ms (opponent current L{opp.CurrentLevelIndex}, connected={_client?.IsConnected ?? false})");
         _client?.Send(new Dictionary<string, object>
         {
             { "type", Msg.SubsegmentHit },
@@ -481,7 +608,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         });
         _seq++;
         _lastSubsegSendRealtime = Time.realtimeSinceStartup;
-        Plugin.Logger.LogDebug($"[Subsegment] sample L{_levelIndex} seq{_seq - 1} t={CurrentTotalMs()} ms dir={dir}");
+        DebugLog($"sample send attempted: L{_levelIndex} seq{_seq - 1} t={CurrentTotalMs()} ms pos=({pos.x:0.##},{pos.y:0.##},{pos.z:0.##}) dir=({dir.x:0.##},{dir.y:0.##},{dir.z:0.##}) connected={_client?.IsConnected ?? false}");
     }
 
     private void SendHit(Plane p)
@@ -495,9 +622,18 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             { "t_ms", CurrentTotalMs() },
         });
         _lastSubsegSendRealtime = Time.realtimeSinceStartup;
+        DebugLog($"hit send attempted: L{p.LevelIndex} seq{p.Seq} t={CurrentTotalMs()} ms connected={_client?.IsConnected ?? false}");
         Plugin.Logger.LogInfo(
             $"[Subsegment] crossed opponent plane L{p.LevelIndex} seq{p.Seq} at t={CurrentTotalMs()} ms.");
     }
 
     private static void Log(string text) => Plugin.Logger.LogInfo("[Subsegment] " + text);
+
+    private static bool DebugLogging => TwilightConfig.SubsegmentDebugLogging;
+
+    private static void DebugLog(string text)
+    {
+        if (!DebugLogging) return;
+        Plugin.Logger.LogInfo("[Subsegment.Debug] " + text);
+    }
 }

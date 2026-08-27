@@ -59,6 +59,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `HUD.FontSize` | `18` | HUD 字号（与 TwilightTimer 计时器默认一致） |
 | `Debug.VerboseNetLog` | `false` | 打印每条收发帧 |
 | `Debug.DebugPreloadLogger` | `false` | 预载详细诊断日志：逐 hold/换入的光照探针、光照贴图表签名、内存快照、清扫耗时等状态转储（排查光照/内存问题用）。纯日志开关，行为完全一致；警告与错误不受影响，`twi preload rs` 始终可用。可用 `twi reload` 热切换 |
+| `Debug.DebugSubsegmentLogger` | `false` | subsegment 详细诊断日志：跟踪器状态迁移、苏醒检测、采样/接收样本、平面创建与穿越检测、命中/完成同步、空转原因等。纯日志开关，行为完全一致；普通 subsegment 状态行不受影响。可用 `twi reload` 热切换 |
 
 ## 控制台命令
 
