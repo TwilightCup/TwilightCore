@@ -27,8 +27,13 @@ namespace TwilightCore.Subsegment;
 ///    frame while recording we compute the signed distance of our position to
 ///    each plane of the CURRENT level; a negative→non-negative flip within the
 ///    lateral radius is a crossing and is reported with our own current time.
-///    Pure math — no Unity colliders, so nothing perturbs level physics and a
-///    fast-moving body cannot tunnel through (a half-space flip is always seen).
+///    A plane may be crossed and reported MULTIPLE times — grazes oscillate
+///    across the edge and winding routes loop back (same-plane reports are
+///    debounced); the server settles each plane after a quiet period takes the
+///    LAST crossing, so early grazes are superseded instead of poisoning the
+///    plane. Pure math — no Unity colliders, so nothing perturbs level physics
+///    and a fast-moving body cannot tunnel through (a half-space flip is
+///    always seen).
 ///
 /// The time source is the REGISTERED real timer (TwilightTimer) via
 /// <see cref="TimerProviderRegistry.Current"/>: every sample and hit carries
@@ -43,6 +48,15 @@ namespace TwilightCore.Subsegment;
 /// hit times per round (transient, never persisted) and broadcasts
 /// <c>subsegment_gap</c> for referees/director overlays. Inspect locally with
 /// <c>twi subseg status</c>.
+///
+/// The same ticker also drives a 1 Hz <c>live_time</c> sync (provider
+/// RoundTotalMs/CurrentSegmentMs + current level) whenever the round is
+/// active — including before the wake-up, so loading and spawn time are
+/// visible to the observers. When the registered provider also implements
+/// <see cref="IRealtimeTimerProvider"/>, the sync additionally carries its
+/// Real Time wall-clock value as <c>real_time_ms</c>. The server relays it
+/// to the referee/director seats only (players never see the opponent's
+/// clock) and keeps the latest per seat for handshake replay.
 /// </summary>
 internal sealed class SubsegmentTracker : MonoBehaviour
 {
@@ -62,7 +76,12 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         public Vector3 Normal; // normalised sample displacement
         public bool Armed;     // previous signed distance initialised?
         public float PrevD;
-        public bool Hit;       // crossing already reported (one report per plane)
+        // A plane is crossed on EVERY negative→non-negative flip (grazes oscillate
+        // across the edge; winding routes loop back through planes). The server
+        // settles each plane on a quiet period and keeps the LAST crossing, so we
+        // report every crossing — debounced per plane to cap the message rate.
+        public int ReportCount;    // reports sent for this plane (completion-sync skip)
+        public float LastReportAt; // realtime of the last report (-1 = never)
     }
 
     public static SubsegmentTracker Instance { get; private set; }
@@ -81,15 +100,16 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     private int _levelIndex = -1;
     private int _seq;                    // next sample sequence number within the level
     private float _nextSampleAt;         // realtime of the next periodic sample
+    private float _nextLiveTimeAt;       // realtime of the next live-time sync (own cadence)
     private Vector3 _lastSamplePos;
     private bool _hasLastSamplePos;
 
     private readonly Queue<string> _recentGaps = new Queue<string>(8);
-    private bool _disabledByServer;      // old server: 400 on our subsegment sends
+    private bool _disabledByServer;      // old server: 400 on our telemetry sends
     private bool _providerMissingLogged; // log the idle reason once per round
     private bool _wakeBlockedLogged;     // one-shot debug for an Armed level waiting for wake-up
     private bool _humanMissingLogged;    // one-shot debug for an active round with no Localplayer
-    private float _lastSubsegSendRealtime = -1f;
+    private float _lastSubsegSendRealtime = -1f; // last sample/hit/live-time send (breaker recency)
 
     // ── Wiring ───────────────────────────────────────────────────────
 
@@ -166,6 +186,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _seq = 0;
         _hasLastSamplePos = false;
         _nextSampleAt = 0f;
+        _nextLiveTimeAt = 0f;
         _planesByLevel.Clear();
         _seenSeqByLevel.Clear();
         _lastOppSeqByLevel.Clear();
@@ -336,8 +357,13 @@ internal sealed class SubsegmentTracker : MonoBehaviour
           .Append("  next seq: ").Append(_seq);
         var p = TimerProviderRegistry.Current;
         if (p != null)
+        {
             sb.Append("\ntimer: round=").Append(p.InRound)
               .Append(" total=").Append(p.RoundTotalMs).Append(" ms");
+            var real = p as IRealtimeTimerProvider;
+            if (real != null)
+                sb.Append(" real=").Append(real.RealTimeMs).Append(" ms");
+        }
         else
             sb.Append("\ntimer: none registered — tracking idle");
         if (_planesByLevel.Count > 0)
@@ -408,6 +434,11 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             return;
         }
 
+        // Live timer sync rides the same ticker but its own cadence: it flows
+        // whenever the round is active (including before the wake-up — loading
+        // and spawn time are visible to the observers), not only while recording.
+        SendLiveTimeIfDue();
+
         switch (_state)
         {
             case SegState.Armed:
@@ -467,6 +498,40 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         if (_nextSampleAt < now - Interval) _nextSampleAt = now + Interval;
     }
 
+    /// <summary>
+    /// 1 Hz live timer sync for the observers: the provider's current
+    /// RoundTotalMs/CurrentSegmentMs plus the level we are in. The server
+    /// relays these to the referee/director seats only (players never see the
+    /// opponent's clock) and keeps the latest per seat for handshake replay.
+    /// When the provider also exposes <see cref="IRealtimeTimerProvider"/>,
+    /// send its wall-clock Real Time value as <c>real_time_ms</c> as well.
+    /// </summary>
+    private void SendLiveTimeIfDue()
+    {
+        float now = Time.realtimeSinceStartup;
+        if (now < _nextLiveTimeAt) return;
+        _nextLiveTimeAt = now + Interval;
+
+        var p = TimerProviderRegistry.Current;
+        var mgr = CollectionManager.Instance;
+        if (p == null || mgr == null) return;
+
+        var msg = new Dictionary<string, object>
+        {
+            { "type", Msg.LiveTime },
+            { "round_id", _roundId },
+            { "level_index", mgr.CurrentLevelIndex },
+            { "total_ms", p.RoundTotalMs },
+            { "segment_ms", p.CurrentSegmentMs },
+        };
+        var real = p as IRealtimeTimerProvider;
+        if (real != null)
+            msg["real_time_ms"] = real.RealTimeMs;
+
+        _client?.Send(msg);
+        _lastSubsegSendRealtime = now;
+    }
+
     private void CheckPlaneCrossings(Vector3 pos)
     {
         if (!_planesByLevel.TryGetValue(_levelIndex, out var planes) || planes.Count == 0) return;
@@ -486,14 +551,23 @@ internal sealed class SubsegmentTracker : MonoBehaviour
                 DebugLog($"plane armed: L{p.LevelIndex} seq{p.Seq} d={d:0.###} pos=({p.Pos.x:0.##},{p.Pos.y:0.##},{p.Pos.z:0.##}) normal=({p.Normal.x:0.##},{p.Normal.y:0.##},{p.Normal.z:0.##})");
                 continue;
             }
-            if (!p.Hit && p.PrevD < 0f && d >= 0f)
+            if (p.PrevD < 0f && d >= 0f)
             {
                 Vector3 lateral = (pos - p.Pos) - p.Normal * d;
                 if (lateral.sqrMagnitude <= radiusSq)
                 {
-                    p.Hit = true;
-                    DebugLog($"crossing detected: L{p.LevelIndex} seq{p.Seq} d={d:0.###} lateral={Mathf.Sqrt(lateral.sqrMagnitude):0.###} radius={radius} t={CurrentTotalMs()} ms");
-                    SendHit(p);
+                    float now = Time.realtimeSinceStartup;
+                    if (now - p.LastReportAt >= RehitDebounceSeconds)
+                    {
+                        p.LastReportAt = now;
+                        p.ReportCount++;
+                        DebugLog($"crossing detected: L{p.LevelIndex} seq{p.Seq} d={d:0.###} lateral={Mathf.Sqrt(lateral.sqrMagnitude):0.###} radius={radius} t={CurrentTotalMs()} ms report#{p.ReportCount}");
+                        SendHit(p);
+                    }
+                    else
+                    {
+                        DebugLog($"crossing debounced: L{p.LevelIndex} seq{p.Seq} since-last={(now - p.LastReportAt):0.###}s < {RehitDebounceSeconds}s");
+                    }
                 }
                 else
                 {
@@ -513,6 +587,14 @@ internal sealed class SubsegmentTracker : MonoBehaviour
 
     private static float Interval => TwilightConfig.SubsegmentSampleInterval.Value;
 
+    /// <summary>
+    /// Same-plane crossing reports are debounced to this interval: grazing a
+    /// plane's edge oscillates across it and would otherwise burst-send. The
+    /// server's quiet-period settle is what actually absorbs grazes (last
+    /// crossing wins); this only caps the message rate per plane.
+    /// </summary>
+    private const float RehitDebounceSeconds = 0.2f;
+
     private Vector3 DisplacementSinceLastSample(Vector3 pos) =>
         _hasLastSamplePos ? MaybeZeroed(pos - _lastSamplePos) : Vector3.zero;
 
@@ -529,10 +611,12 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     /// but only once the opponent has provably left this level (their
     /// player_status advances past a level only when its time is uploaded).
     /// Whichever player finishes second sends the sync, so each level gets
-    /// exactly one; a genuine earlier crossing of that sample wins (the server
-    /// keeps first hits only). A level abandoned via a mid-round `lc skip`
-    /// leaves the opponent's last sample mid-level — the sync then compares
-    /// against that point instead (rare debug-path edge).
+    /// exactly one; a genuine earlier crossing of that sample already produced
+    /// its own reports (and under the server's settled-event model the true
+    /// crossing time wins over the completion edge), so the local skip below
+    /// avoids a redundant near-identical event. A level abandoned via a
+    /// mid-round `lc skip` leaves the opponent's last sample mid-level — the
+    /// sync then compares against that point instead (rare debug-path edge).
     /// </summary>
     private void SendCompletionSync()
     {
@@ -556,11 +640,12 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             return;
         }
 
-        // Skip locally if we already crossed that plane for real — the server
-        // would drop the duplicate hit anyway.
+        // Skip locally if we already crossed that plane for real — the true
+        // crossing already reported, and the server's settle takes it over a
+        // completion-edge event with a near-identical time anyway.
         if (_planesByLevel.TryGetValue(_levelIndex, out var planes))
             for (int i = planes.Count - 1; i >= 0; i--)
-                if (planes[i].Seq == oppSeq && planes[i].Hit)
+                if (planes[i].Seq == oppSeq && planes[i].ReportCount > 0)
                 {
                     DebugLog($"completion sync skipped L{_levelIndex}: already crossed opponent seq{oppSeq}");
                     return;

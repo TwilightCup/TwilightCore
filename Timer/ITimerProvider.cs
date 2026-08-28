@@ -92,6 +92,18 @@ namespace TwilightCore.Timer
     }
 
     /// <summary>
+    /// 可选扩展（现实时间/墙钟计时）：实现此接口的 <see cref="ITimerProvider"/>
+    /// 除游戏时间外还维护一台与游戏时间同时启停、穿过加载/暂停持续累计的
+    /// 现实时间计时器。TwilightCore 的 <c>live_time</c> 上报在该提供方可用时
+    /// 附带 <c>real_time_ms</c>；旧版提供方不实现则照常上报原有两个时间字段。
+    /// </summary>
+    public interface IRealtimeTimerProvider
+    {
+        /// <summary>本回合/本局现实时间累计（毫秒）。</summary>
+        long RealTimeMs { get; }
+    }
+
+    /// <summary>
     /// 静态注册入口。后注册者胜；卸载时注销。线程安全。
     /// <c>Register(null)</c> 无操作。计时器插件在自身加载完成后注册、卸载前注销；
     /// TwilightCore 在每个回合开始时读取 <see cref="Current"/>（注册晚于

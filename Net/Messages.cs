@@ -20,6 +20,9 @@ internal static class Msg
     // directions, like "chat").
     public const string SubsegmentSample = "subsegment_sample";
     public const string SubsegmentHit = "subsegment_hit";
+    // 1 Hz live timer sync riding the subsegment ticker (server relays it to
+    // the referee/director seats only; player seats never receive it).
+    public const string LiveTime = "live_time";
     // Preload gating (held-scene preload, sent by ScenePreloadManager):
     public const string PreloadReport = "preload_report";
 

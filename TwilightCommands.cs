@@ -173,9 +173,11 @@ internal static class TwilightCommands
                 var p = TimerProviderRegistry.Current;
                 if (p != null)
                 {
+                    var real = p as IRealtimeTimerProvider;
                     TwilightLog.Print(
                         $"provider: api={p.ApiVersion} match={p.InMatchMode} round={p.InRound} " +
                         $"segment={p.IsInSegment} cur={p.CurrentSegmentMs}ms total={p.RoundTotalMs}ms " +
+                        (real != null ? $"real={real.RealTimeMs}ms " : "") +
                         $"valid={p.ValidAttemptCount} invalid={p.GetActiveInvalidMarks().Count}");
                 }
                 if (_timer != null)
