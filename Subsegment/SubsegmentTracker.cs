@@ -9,8 +9,9 @@ using UnityEngine;
 namespace TwilightCore.Subsegment;
 
 /// <summary>
-/// MULTI-round live time-gap tracking ("subsegment"). Two jobs, both driven
-/// from authoritative state every frame (no event toggling to undo):
+/// MULTI-round live time-gap tracking ("subsegment") + observer live timer
+/// sync for MULTI and SINGLE. Two jobs, both driven from authoritative state
+/// every frame (no event toggling to undo):
 ///
 /// 1. <b>Recording</b>: in each level of a match collection run, from the FIRST
 ///    wake-up (the character leaving the limp states Spawning/Unconscious/Dead —
@@ -52,7 +53,9 @@ namespace TwilightCore.Subsegment;
 /// The same ticker also drives a 1 Hz <c>live_time</c> sync (provider
 /// RoundTotalMs/CurrentSegmentMs + current level) whenever the round is
 /// active — including before the wake-up, so loading and spawn time are
-/// visible to the observers. When the registered provider also implements
+/// visible to the observers; for SINGLE rounds this carries the current
+/// attempt's realtime segment (per-attempt timers reset on retry). When the
+/// registered provider also implements
 /// <see cref="IRealtimeTimerProvider"/>, the sync additionally carries its
 /// Real Time wall-clock value as <c>real_time_ms</c>. The server relays it
 /// to the referee/director seats only (players never see the opponent's
@@ -162,11 +165,11 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _humanMissingLogged = false;
         if (Enabled)
         {
-            Log($"round {roundId}: tracking armed (MULTI).");
+            Log($"round {roundId}: live_time armed (MULTI/SINGLE), subsegment armed for MULTI only.");
         }
         else
         {
-            Log($"round {roundId}: subsegment tracking DISABLED (Features.EnableSubsegment=false).");
+            Log($"round {roundId}: live_time/subsegment tracking DISABLED (Features.EnableSubsegment=false).");
         }
         var pickType = MatchSession.Instance?.Pick?.Type;
         DebugLog($"round start: enabled={Enabled}, provider={(TimerProviderRegistry.Current != null ? "registered" : "MISSING")}, pickType={pickType}, isMulti={pickType == PickType.Multi}, round={roundId}");
@@ -204,6 +207,11 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             DebugLog($"level {levelIndex} started ignored: Features.EnableSubsegment=false");
             return;
         }
+        if (MatchSession.Instance?.Pick?.Type != PickType.Multi)
+        {
+            DebugLog($"level {levelIndex} started ignored: subsegment tracking is MULTI-only (single uses live_time only)");
+            return;
+        }
         _levelIndex = levelIndex;
         _state = SegState.Armed;
         _seq = 0;
@@ -225,6 +233,11 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         if (!Enabled)
         {
             DebugLog($"level {levelIndex} completed ignored: Features.EnableSubsegment=false");
+            return;
+        }
+        if (MatchSession.Instance?.Pick?.Type != PickType.Multi)
+        {
+            DebugLog($"level {levelIndex} completed ignored: subsegment tracking is MULTI-only (single uses live_time only)");
             return;
         }
         bool wasRecording = _state == SegState.Recording;
@@ -388,18 +401,31 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     {
         if (!Enabled || _disabledByServer) return;
 
-        // Re-evaluate from authoritative state every frame: the tracker is
-        // alive only inside a MULTI round of a live collection run. A transient
-        // disconnect keeps MatchSession.Phase == InRound, so sampling and plane
-        // detection continue while offline (sends are dropped by TwilightClient;
-        // the server replays the opponent's samples on reconnect).
+        // Re-evaluate from authoritative state every frame: subsegment sampling
+        // and plane detection are alive only inside a MULTI round of a live
+        // collection run. The live_time sync, however, also flows in SINGLE
+        // rounds so the director overlay can show the current attempt's
+        // realtime segment (the same real timer, whose per-attempt timers are
+        // reset on retry). A transient disconnect keeps MatchSession.Phase ==
+        // InRound, so sampling/planes continue while offline (sends are dropped
+        // by TwilightClient; the server replays the opponent's samples on
+        // reconnect).
         var session = MatchSession.Instance;
-        bool active = session != null
-                      && session.Phase == MatchPhase.InRound
-                      && session.Pick != null
-                      && session.Pick.Type == PickType.Multi
-                      && CollectionManager.Instance != null
-                      && CollectionManager.Instance.IsInCollectionRun;
+        bool inRound = session != null
+                       && session.Phase == MatchPhase.InRound
+                       && session.Pick != null
+                       && CollectionManager.Instance != null
+                       && CollectionManager.Instance.IsInCollectionRun;
+        bool active = inRound && session!.Pick!.Type == PickType.Multi;
+        if (inRound)
+        {
+            // Live timer sync rides the same ticker but its own cadence: it
+            // flows whenever the round is active (including before the wake-up
+            // — loading and spawn time are visible to the observers), not only
+            // while recording, and for both MULTI (current level segment) and
+            // SINGLE (current attempt segment).
+            SendLiveTimeIfDue();
+        }
         if (!active)
         {
             if (_state != SegState.Idle)
@@ -433,11 +459,6 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             }
             return;
         }
-
-        // Live timer sync rides the same ticker but its own cadence: it flows
-        // whenever the round is active (including before the wake-up — loading
-        // and spawn time are visible to the observers), not only while recording.
-        SendLiveTimeIfDue();
 
         switch (_state)
         {

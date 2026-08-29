@@ -133,7 +133,9 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
   的 Real Time）。仅中转**裁判/导播**
   （选手互不感知对手计时），按席暂存最近一条，回合中晚连的裁判/导播握手里立即补发。
   回合活跃期间持续上报（含加载/出生阶段），与 subsegment 同受
-  `Features.EnableSubsegment` 门控、同依赖真实计时器。
+  `Features.EnableSubsegment` 门控、同依赖真实计时器。SINGLE 回合同样上报
+  live_time（当前尝试的实时分段，重试时计时器清零），但不参与 subsegment
+  平面采样/差距。
 - **时间口径**：时间值直接取 **TwilightTimer**（真实计时器，经 `TimerProviderRegistry` 注册）
   的 `RoundTotalMs`——与官方计分**同一条时间线**，时间差可直接与成绩对照。采样窗口为
   每关苏醒 → 真实过关。未注册真实计时器时 subsegment 不工作（**不回退**模拟计时器——
