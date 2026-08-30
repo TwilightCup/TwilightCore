@@ -26,10 +26,8 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 首次启动后在 `BepInEx/config/TwilightCore.cfg` 生成。**后端地址/端口不在配置里**，用 `twi connect <host> [port]` 在控制台传入（默认端口 **8443**，对应公网 nginx HTTPS 入口）。nginx 同源反代：`/api/...`→后端 REST（去掉 `/api` 前缀），`/ws/{token}`→后端 WebSocket，`/`→前端。所以插件登录走 `https://<host>:8443/api/auth/login`，WS 走 `wss://<host>:8443/ws/{token}`：
 
 | 段.键 | 默认 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `Server.UseTLS` | `true` | 走 `wss`/`https`（公网 nginx 走 TLS；host/port 由 `twi connect` 传入）。本地裸服务端时改 `false` |
-
-> **TLS 实现说明**：游戏 Unity 2017.4 自带 Mono 的 TLS 栈太旧，无法与服务端完成 TLS1.2 握手（报 “The authentication or decryption has failed”）。因此 WebSocket 的 TLS 握手改用内嵌的 **BouncyCastle**（纯托管 TLS1.2，自带现代密码套件）。`BouncyCastle.Crypto.dll` 作为独立文件放在 `BepInEx/plugins/` 旁，部署插件时需一并放入。REST 登录走 UnityWebRequest，不受此影响。
 | `Account.Username` | _(空)_ | 选手账号用户名 |
 | `Account.Password` | _(空)_ | 选手账号口令（明文存储，仅用于换 JWT） |
 | `Account.Seat` | _(空)_ | `PLAYER_A`/`PLAYER_B`；留空由服务端按会话指派自动解析 |
@@ -68,7 +66,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 **合集（移植自 LevelCollections）**
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `lc random [秒]` | 从本地配置池随机抽合集开跑（练习用） |
 | `lc restart [秒]` | 从第一关重跑当前合集 |
 | `lc skip [秒]` | 跳过当前关（单关=本次尝试记 N/A） |
@@ -77,7 +75,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 **TwilightCore**
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `twi connect <host> [port]` | 连接（地址在命令里给，默认端口 8443，默认走 `wss`/`https`） |
 | `twi disconnect` | 主动断开（停止自动重连） |
 | `twi disconnect simulate` | 模拟意外断连：连接会按配置自动重连，用于验证断线重连续传 |
@@ -98,6 +96,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `twi preload warm <levelId\|all>` | **保守预载验证**：手动把指定关卡（或 `all` = 全部场景文件 + 共享文件）预读进 OS 页缓存，不经比赛流程（调试与冷/热缓存 A/B 用）；进度见 `twi preload status` 的 `warm:` 行 |
 
 聊天：
+
 - **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
 - 收到消息时（控制台未打开），会自动弹出**仅显示日志（无输入框）**的聊天框，持续 `Chat.PopupSecs`（默认 5 秒）后淡出；有新消息会顺延。可由 `Chat.PopupEnabled` 关闭。
 
