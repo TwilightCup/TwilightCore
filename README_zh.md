@@ -229,14 +229,3 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 3. 选手端：编辑 `TwilightCore.cfg`（Username/Password），启动游戏 → 控制台输入 `twi connect <公网IP>`（默认端口 8443、默认走 `wss`/`https`，即 `https://<公网IP>:8443`：登录走 `/api/auth/login`，WS 走 `/ws/{token}`）→ 控制台依次回显登录/连接/已连接 → 收到 `auth_ok`。直连本地裸后端时用 `twi connect <本机IP> 8000` 并在 cfg 里把 `Server.UseTLS=false`（此时登录路径需为裸 `/auth/login`，不走 `/api`——仅本地无 nginx 时）。
 4. 裁判端 `referee_mark_prep` → 选手 `!ready` → 双方就绪 → 观察 `countdown_tick` → `round_start` 下发 → 选手端自动加载合集第一关并按 LC 流程推进。
 5. **模拟计时器**：真实通关会自动上报；或用 `twi sim level_done 12345` / `twi sim skip` / `twi sim complete` / `twi sim forfeit` 手动驱动 → 双方 terminal 后服务端进 `ROUND_JUDGING` → 裁判 `referee_verdict` → `round_result` + `cumulative_score` 正确。
-
-## 已知限制 / 待办
-
-- **真实计时器**：未实现（本期用 `SimulatedTimer` 占位）。
-- **预载端到端**：held-scene 预载依赖服务端 `pick_announced`/门控（后端 R1/R2）；
-  后端上线前仅可用 `twi preload …` 手工验证，正式比赛回合不受影响（自动走标准加载）。
-- **重连重载合集**：回合中断线重连只补传双方状态快照，不会重新下发/加载合集配置
-  （服务端 `reconnect_resync` 不含 pick/collection）；游戏崩溃后需手动重进。
-  同一进程内的临时断连不会停止计时器，断线期间产生的上报会缓存并在重连后补发
-  （`twi disconnect simulate` 可模拟该路径）。
-- **聊天**：独立的 OnGUI 控制台（Ctrl+T），不依赖游戏内置 `NetChat`（后者在单人/菜单下被游戏锁死）。打开时仅抑制抓取/跳跃输入，**移动键（WASD）仍会生效**——停步后再打字；如需完全屏蔽移动，后续可在控制台打开时挂 `HumanControls` 补丁。

@@ -37,9 +37,9 @@ matching the public nginx HTTPS entry). nginx same-origin reverse proxy: `/api/.
 | Section.Key | Default | Description |
 | --- | --- | --- |
 | `Server.UseTLS` | `true` | Use `wss`/`https` (public nginx uses TLS; host/port come from `twi connect`). Set to `false` for a local plain backend |
-| `Account.Username` | _(empty)_ | Player account username |
-| `Account.Password` | _(empty)_ | Player account password (stored in plaintext, used only to exchange for JWT) |
-| `Account.Seat` | _(empty)_ | `PLAYER_A` / `PLAYER_B`; if left empty, the server assigns it automatically from the session |
+| `Account.Username` | *(empty)* | Player account username |
+| `Account.Password` | *(empty)* | Player account password (stored in plaintext, used only to exchange for JWT) |
+| `Account.Seat` | *(empty)* | `PLAYER_A` / `PLAYER_B`; if left empty, the server assigns it automatically from the session |
 | `Net.HeartbeatSecs` | `20` | Heartbeat interval |
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | Exponential disconnect backoff (reconnect reuses the address from the last `twi connect`) |
 | `Features.EnableReadyLock` | `true` | Lock manual level entry after `!ready` in the prep phase and during countdown (players may practice freely before `!ready`) |
@@ -220,15 +220,3 @@ so the player is **already in the level when the countdown ends**. How it works:
 3. Player side: edit `TwilightCore.cfg` (Username/Password), start the game → in the console enter `twi connect <public IP>` (default port 8443, default `wss`/`https`, i.e. `https://<public IP>:8443`: login via `/api/auth/login`, WS via `/ws/{token}`) → the console displays login/connecting/connected in sequence → receive `auth_ok`. For a direct local plain backend, use `twi connect <local IP> 8000` and set `Server.UseTLS=false` in the cfg (then the login path must be the bare `/auth/login`, not `/api` — only for local no-nginx setups).
 4. Referee runs `referee_mark_prep` → player runs `!ready` → both ready → observe `countdown_tick` → `round_start` is pushed → the player side automatically loads the collection's first level and proceeds through the LC flow.
 5. **Simulated timer**: real completions are reported automatically; or manually drive with `twi sim level_done 12345` / `twi sim skip` / `twi sim complete` / `twi sim forfeit` → after both players finish, the server enters `ROUND_JUDGING` → referee runs `referee_verdict` → `round_result` + `cumulative_score` are correct.
-
-## Known Limitations / TODO
-
-- **Real timer**: not implemented yet (currently using `SimulatedTimer` as a placeholder).
-- **Preload end-to-end**: held-scene preload depends on server-side `pick_announced`/gating (backend R1/R2);
-  before backend availability, only manual `twi preload …` validation is possible; official match rounds are unaffected (they automatically use standard loading).
-- **Reconnect reloading collections**: on disconnect/reconnect mid-round, only both sides' state snapshots are replayed; the pick/collection config is not re-sent/reloaded
-  (the server's `reconnect_resync` does not include pick/collection); after a game crash, manual re-entry is required.
-  Temporary disconnects within the same process do not stop the timer; reports produced while disconnected are buffered and resent on reconnect
-  (`twi disconnect simulate` can simulate this path).
-- **Chat**: an independent OnGUI console (Ctrl+T) that does not depend on the game's built-in `NetChat` (the latter is locked by the game in single-player/menus).
-  While open it only suppresses grab/jump input; **movement keys (WASD) still work** — stop moving before typing. If fully blocking movement is desired, a `HumanControls` patch could be attached while the console is open later.
