@@ -1,151 +1,154 @@
+> English | [中文](README_zh.md)
+
 # TwilightCore
 
-黄昏杯（Twilight Cup）比赛的**选手端** BepInEx 插件，用于《人类一败涂地》(Human: Fall Flat)。
-内嵌 [LevelCollections](https://github.com/...) 合集引擎，并连接已存在的
-`TwilightCupBackend` 服务端（FastAPI + WebSocket），实现：聊天、`!ready`、阶段/倒计时、
-服务端下发合集自动开跑、准备阶段锁定（防提前起跑）、多关回合的 **subsegment 实时时间差追踪**，
-以及一套**模拟计时器**让比赛流程不依赖真实计时器也能跑通到计分/判定。
+TwilightCore is the **player-side** BepInEx plugin for the Twilight Cup tournament, used in *Human: Fall Flat*.
+It embeds the [LevelCollections](https://github.com/...) collection engine and connects to the existing
+`TwilightCupBackend` server (FastAPI + WebSocket), providing: chat, `!ready`, phase/countdown,
+server-pushed collection auto-start, ready-phase lock (to prevent early starts), **real-time subsegment tracking**
+for multi-level rounds, and a **simulated timer** so the match flow can still run through scoring/judgment
+without depending on a real timer.
 
-> 真实计时器（规则精确的每关计时 + 上报）会作为独立模块后续合并；当前用 `SimulatedTimer`
-> 临时替代，接口（`IRoundReporter`）已留好，合并时只换实现。
+> The real timer (rules-exact per-level timing + reporting) will be merged later as a separate module.
+> For now `SimulatedTimer` is a temporary replacement; the interface (`IRoundReporter`) is already in place,
+> so only the implementation needs to be swapped when the real timer is merged.
 
-## 安装 / 构建
+## Installation / Build
 
 ```bash
-# 默认路径指向 macOS Steam 安装；其它机器用 -p 覆盖
+# Default path points to a macOS Steam install; override with -p on other machines
 dotnet build -c Release \
   -p:GAME_MANAGED="/path/Human_Data/Managed" \
   -p:BEPINEX_CORE="/path/BepInEx/core"
 cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 ```
 
-若之前装过独立 `LevelCollections.dll`，请移走（TwilightCore 已内置，否则会出现两个合集按钮）。
+If you previously installed a standalone `LevelCollections.dll`, remove it (TwilightCore now includes it;
+having both would create two collection buttons).
 
-## 配置
+## Configuration
 
-首次启动后在 `BepInEx/config/TwilightCore.cfg` 生成。**后端地址/端口不在配置里**，用 `twi connect <host> [port]` 在控制台传入（默认端口 **8443**，对应公网 nginx HTTPS 入口）。nginx 同源反代：`/api/...`→后端 REST（去掉 `/api` 前缀），`/ws/{token}`→后端 WebSocket，`/`→前端。所以插件登录走 `https://<host>:8443/api/auth/login`，WS 走 `wss://<host>:8443/ws/{token}`：
+The config is generated at `BepInEx/config/TwilightCore.cfg` on first launch. **The backend address/port is not
+stored in the config**; it is passed via `twi connect <host> [port]` in the console (default port **8443**,
+matching the public nginx HTTPS entry). nginx same-origin reverse proxy: `/api/...` → backend REST (strip the
+`/api` prefix), `/ws/{token}` → backend WebSocket, `/` → frontend. Therefore the plugin uses
+`https://<host>:8443/api/auth/login` for login and `wss://<host>:8443/ws/{token}` for WebSocket:
 
-| 段.键 | 默认 | 说明 |
+| Section.Key | Default | Description |
 | --- | --- | --- |
-| `Server.UseTLS` | `true` | 走 `wss`/`https`（公网 nginx 走 TLS；host/port 由 `twi connect` 传入）。本地裸服务端时改 `false` |
-| `Account.Username` | _(空)_ | 选手账号用户名 |
-| `Account.Password` | _(空)_ | 选手账号口令（明文存储，仅用于换 JWT） |
-| `Account.Seat` | _(空)_ | `PLAYER_A`/`PLAYER_B`；留空由服务端按会话指派自动解析 |
-| `Net.HeartbeatSecs` | `20` | 心跳间隔 |
-| `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | 断线指数退避（重连沿用上次 `twi connect` 的地址） |
-| `Features.EnableReadyLock` | `true` | 准备阶段 `!ready` 之后、以及倒计时阶段锁定手动进关（未 ready 前可自由练习） |
-| `Features.EnableSimTimer` | `true` | 启用模拟计时器上报 |
-| `Features.SameLevelReloadMinDwell` | `1` | 合集连续进同一关时绕道 `Empty` 场景的最短停留秒数（视觉上区分两次尝试）；`0` 关闭绕道 |
-| `Features.EnableMenuFallLimit` | `true` | 连接比赛服期间限制主菜单小人下落速度（防坠落） |
-| `Features.EnableScenePreload` | `true` | **held-scene 预载**：`!ready` 后把选图（MULTI）首关以休眠方式驻留内存，`round_start` 瞬间换入（见下文「关卡预载」） |
-| `Features.EnableChainedPreload` | `true` | **链式预载（M3）**：合集进行中后台预载下一关，过关时帧级换入（见下文「关卡预载」）。若游玩中掉帧明显可关闭（退化为仅首关瞬发）；本地 `lc` 合集同样生效 |
-| `Features.EnableProbeFreeze` | `true` | **染色修复（仅烘焙探针的关，如 Halloween/Steam）**：预载保持期内把激活光照探针系数冻结为玩家处采样值（均匀场），换入时写回该关真实系数。未烘焙探针的关（其余内置关）无法安全写入（托管读数与渲染器路径缩放约定不一致），保持期内维持轻微的下一关染色（换关即恢复，属已接受的取舍） |
-| `Features.ProbeFreezeUnbakedHolds` | `true` | **未烘焙关保持期全黑修复（实验性）**：hold 非烘焙探针的关（Halloween/Steam 以外全部）时，玩家落在其探针凸包内会让所有动态物体（含玩家模型）采到全零系数、完全失去环境光。此项把冻结同样应用到未烘焙组——值取加载前游玩关结构的实采样，换入**不写回**（场景激活时引擎自会重填，避免历史上的过曝级联）。可能存在轻微亮度偏移；关闭则保持期维持全黑 |
-| `Features.PreloadUnloadUnusedAfterSwap` | `true` | **换入后清扫**：每次换入完成、旧场景卸载后执行 `Resources.UnloadUnusedAssets()` 并等待（约 50-145ms）。additive 预载路径会按不同场景累积泄漏 native 资产，长合集（约 12 个不同场景起）最终在场景加载时 OOM 硬崩；清扫即修复（代价是每次换入多一次短卡顿），关闭可做 A/B 对比 |
-| `Features.EnableDiskCacheWarmup` | `true` | **保守预载（磁盘缓存预热）**：PREP 期首关 hold 完成后，单一后台线程把合集后续关卡的磁盘文件预读进 OS 页缓存——比赛中的链式预载读盘变内存读，仅剩反序列化 CPU 负担。纯文件 IO（不触碰场景/光照、单块固定缓冲不增进程内存），任何失败静默退化为现状；`twi reload` 热切（关闭只停新预热，进行中的跑完） |
-| `Features.DiskWarmupMode` | `follow-chain` | 预热策略：`follow-chain` = PREP 只头暖首关后两关，之后每个链式 hold 完成即预热"下下关"（页面更鲜活、稳态占用小、本地 `lc` 练习局同样生效；局内有温和后台读，落在磁盘空闲窗口）；`prep-all` = PREP 一次性暖全部后续关卡（局内零磁盘 IO）。`twi reload` 热切 |
-| `Features.DiskWarmupWarmSharedFiles` | `true` | 磁盘缓存预热时连同共享资产一并预热：按目标关 build index **邻接裁剪**的 `sharedassets{N}.*` 三件套 + `resources.assets`（全合合约 600MB 量级，而非全部 shared 文件的 ~4.1GB；场景表兜底/`warm all` 时退化为全量）；逐文件体积见 `Debug.DebugPreloadLogger` 日志，机器内存吃紧可关（页缓存本就由内核管理、可回收） |
-| `Features.EnableSubsegment` | `true` | 多关回合 subsegment 实时时间差追踪（见下节；需服务端已升级 + TwilightTimer 真实计时器在运行） |
-| `Subsegment.PlaneRadius` | `50` | 检测平面半径（米）：对方采样点处垂直于其运动向量的虚拟平面范围 |
-| `Subsegment.MinMove` | `0.5` | 采样间隔位移小于该值（米）则该样本不生成检测平面（近乎静止） |
-| `Subsegment.SampleInterval` | `1` | 采样间隔（秒） |
-| `Chat.PopupEnabled` | `true` | 收到消息时弹出仅日志的聊天框（无输入框），随后淡出 |
-| `Chat.PopupSecs` | `5` | 上述弹出框持续秒数（之后淡出） |
-| `Chat.ToggleHotkey` | `Ctrl+T` | 打开/关闭聊天控制台的快捷键，格式 `修饰键+主键`，如 `Ctrl+T`、`Ctrl+Shift+Y`、`Alt+F8`、`F8`。`Ctrl` 在 macOS 上同时匹配 `Cmd`。可用 `twi reload` 热生效（无需重启） |
-| `HUD.Enabled` | `true` | 合集运行期间在屏幕右上角显示两行合集信息（样式仿计时器：粗体纯文本、单色无渐变） |
-| `HUD.TextColor` | `FFD94C` | HUD 文本颜色，hex 编码（`RRGGBB` 或 `RRGGBBAA`，可带 `#`） |
-| `HUD.FontSize` | `18` | HUD 字号（与 TwilightTimer 计时器默认一致） |
-| `Debug.VerboseNetLog` | `false` | 打印每条收发帧 |
-| `Debug.DebugPreloadLogger` | `false` | 预载详细诊断日志：逐 hold/换入的光照探针、光照贴图表签名、内存快照、清扫耗时等状态转储（排查光照/内存问题用）。纯日志开关，行为完全一致；警告与错误不受影响，`twi preload rs` 始终可用。可用 `twi reload` 热切换 |
-| `Debug.DebugSubsegmentLogger` | `false` | subsegment 详细诊断日志：跟踪器状态迁移、苏醒检测、采样/接收样本、平面创建与穿越检测、命中/完成同步、空转原因等。纯日志开关，行为完全一致；普通 subsegment 状态行不受影响。可用 `twi reload` 热切换 |
+| `Server.UseTLS` | `true` | Use `wss`/`https` (public nginx uses TLS; host/port come from `twi connect`). Set to `false` for a local plain backend |
+| `Account.Username` | _(empty)_ | Player account username |
+| `Account.Password` | _(empty)_ | Player account password (stored in plaintext, used only to exchange for JWT) |
+| `Account.Seat` | _(empty)_ | `PLAYER_A` / `PLAYER_B`; if left empty, the server assigns it automatically from the session |
+| `Net.HeartbeatSecs` | `20` | Heartbeat interval |
+| `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | Exponential disconnect backoff (reconnect reuses the address from the last `twi connect`) |
+| `Features.EnableReadyLock` | `true` | Lock manual level entry after `!ready` in the prep phase and during countdown (players may practice freely before `!ready`) |
+| `Features.EnableSimTimer` | `true` | Enable simulated timer reporting |
+| `Features.SameLevelReloadMinDwell` | `1` | Minimum seconds to detour through the `Empty` scene when a collection repeats the same level back-to-back (visually separates attempts); `0` disables the detour |
+| `Features.EnableMenuFallLimit` | `true` | Limit the main-menu character's fall speed while connected to a match server (prevents falling out) |
+| `Features.EnableScenePreload` | `true` | **Held-scene preload**: after `!ready`, keep the first level of the selected MULTI pick dormant in memory, then swap it in instantly at `round_start` (see "Level Preload" below) |
+| `Features.EnableChainedPreload` | `true` | **Chained preload (M3)**: during a collection run, preload the next level in the background and swap it in at frame granularity when the current level completes (see "Level Preload" below). If in-game frame drops are noticeable, disable this (falls back to instant first-level swap only); also works for local `lc` collections |
+| `Features.EnableProbeFreeze` | `true` | **Tint fix (only for baked-probe levels such as Halloween/Steam)**: during the hold window, freeze the active light-probe coefficients to the sampled values at the player's position (uniform field), then write the level's real coefficients back on swap-in. Unbaked-probe levels (all other built-ins) cannot be safely written (managed reads and renderer path scaling conventions differ), so they keep a slight next-level tint during the hold (restored on level change; accepted trade-off) |
+| `Features.ProbeFreezeUnbakedHolds` | `true` | **Unbaked hold blackness fix (experimental)**: when holding an unbaked-probe level (everything except Halloween/Steam), if the player is inside its probe convex hull, all dynamic objects (including the player model) sample zero coefficients and lose ambient light entirely. This applies the same freeze to the unbaked group — values are sampled from the actual playing-level structure before loading, and are **not written back** on swap-in (the engine refills them when the scene activates, avoiding the historical over-brightening cascade). There may be a slight brightness offset; disabling keeps the hold window fully black |
+| `Features.PreloadUnloadUnusedAfterSwap` | `true` | **Post-swap cleanup**: after each swap completes and the old scene unloads, run `Resources.UnloadUnusedAssets()` and wait (~50–145 ms). The additive preload path leaks native assets per distinct scene; long collections (roughly 12+ distinct scenes) eventually hard-crash with OOM during scene loading. This cleanup fixes that (cost: one extra short hitch per swap); disable for A/B comparison |
+| `Features.EnableDiskCacheWarmup` | `true` | **Conservative preload (disk cache warmup)**: after the first-level hold completes during PREP, a single background thread pre-reads the collection's remaining level files into the OS page cache — during a match, chained preload disk reads become memory reads, leaving only deserialization CPU work. Pure file I/O (does not touch scenes/lighting, uses a single fixed buffer and adds no process memory); any failure silently degrades to the current behavior. `twi reload` hot-toggles it (disabling only stops new warmups; in-progress warmups finish) |
+| `Features.DiskWarmupMode` | `follow-chain` | Warmup strategy: `follow-chain` = PREP only head-warms the two levels after the first, then every completed chained hold warms the "level after next" (fresher pages, smaller steady-state footprint, also works for local `lc` practice runs; mild background reads in-round land in disk-idle windows). `prep-all` = warm all remaining levels once during PREP (zero in-round disk I/O). `twi reload` hot-toggles |
+| `Features.DiskWarmupWarmSharedFiles` | `true` | Also warm shared assets during disk-cache warmup: the build-index-adjacent `sharedassets{N}.*` trio + `resources.assets` for each target level (about 600 MB for a whole collection, not the ~4.1 GB of all shared files; falls back to full warming when the scene table fails or with `warm all`). Per-file sizes are logged by `Debug.DebugPreloadLogger`; disable if the machine is memory-constrained (page cache is managed by the kernel and reclaimable) |
+| `Features.EnableSubsegment` | `true` | Real-time subsegment gap tracking for multi-level rounds (see below; requires an upgraded server and the TwilightTimer real timer running) |
+| `Subsegment.PlaneRadius` | `50` | Detection plane radius (meters): the virtual plane at an opponent's sample point, perpendicular to their movement vector |
+| `Subsegment.MinMove` | `0.5` | If the displacement between samples is smaller than this (meters), that sample does not generate a detection plane (nearly stationary) |
+| `Subsegment.SampleInterval` | `1` | Sample interval (seconds) |
+| `Chat.PopupEnabled` | `true` | Show a log-only chat popup (no input box) when a message is received, then fade out |
+| `Chat.PopupSecs` | `5` | Duration in seconds for the popup above (then fades out) |
+| `Chat.ToggleHotkey` | `Ctrl+T` | Hotkey to open/close the chat console, format `modifier+key`, e.g. `Ctrl+T`, `Ctrl+Shift+Y`, `Alt+F8`, `F8`. `Ctrl` also matches `Cmd` on macOS. Hot-reloadable with `twi reload` (no restart needed) |
+| `HUD.Enabled` | `true` | Show two lines of collection info in the top-right corner during collection runs (styled after the timer: bold plain text, single color, no gradient) |
+| `HUD.TextColor` | `FFD94C` | HUD text color, hex encoded (`RRGGBB` or `RRGGBBAA`, `#` optional) |
+| `HUD.FontSize` | `18` | HUD font size (same as the default TwilightTimer) |
+| `Debug.VerboseNetLog` | `false` | Print every sent/received frame |
+| `Debug.DebugPreloadLogger` | `false` | Detailed preload diagnostics: per-hold/swap light probes, lightmap table signatures, memory snapshots, cleanup timing, and other state dumps (for investigating lighting/memory issues). Pure logging switch, behavior is identical; warnings and errors are unaffected, and `twi preload rs` is always available. Hot-switchable with `twi reload` |
+| `Debug.DebugSubsegmentLogger` | `false` | Detailed subsegment diagnostics: tracker state transitions, wake detection, sampling/receiving samples, plane creation and crossing detection, hit/completion sync, idle reasons, etc. Pure logging switch, behavior is identical; normal subsegment status lines are unaffected. Hot-switchable with `twi reload` |
 
-## 控制台命令
+## Console Commands
 
-游戏内按 `` ` ``（BackQuote）或 `F1` 打开控制台。
+Open the in-game console with `` ` `` (backquote) or `F1`.
 
-**合集（移植自 LevelCollections）**
+**Collections (ported from LevelCollections)**
 
-| 命令 | 说明 |
+| Command | Description |
 | --- | --- |
-| `lc random [秒]` | 从本地配置池随机抽合集开跑（练习用） |
-| `lc restart [秒]` | 从第一关重跑当前合集 |
-| `lc skip [秒]` | 跳过当前关（单关=本次尝试记 N/A） |
-| `lc abort` | 取消挂起的延迟命令 |
+| `lc random [seconds]` | Start a random collection from the local config pool (practice) |
+| `lc restart [seconds]` | Restart the current collection from the first level |
+| `lc skip [seconds]` | Skip the current level (for a single-level pick, this attempt is recorded as N/A) |
+| `lc abort` | Cancel a pending delayed command |
 
 **TwilightCore**
 
-| 命令 | 说明 |
+| Command | Description |
 | --- | --- |
-| `twi connect <host> [port]` | 连接（地址在命令里给，默认端口 8443，默认走 `wss`/`https`） |
-| `twi disconnect` | 主动断开（停止自动重连） |
-| `twi disconnect simulate` | 模拟意外断连：连接会按配置自动重连，用于验证断线重连续传 |
-| `twi status` | 连接 / 比赛状态 |
-| `twi reload` | 从磁盘热重载 `TwilightCore.cfg` + `LevelCollections.json`（改完配置文件不用重启游戏） |
-| `twi sim level_done [ms]` | 模拟当前关/尝试完成（可指定用时） |
-| `twi sim skip` | 模拟跳过（N/A） |
-| `twi sim complete [final_ms]` | 模拟整回合完成 |
-| `twi sim forfeit [multi_exit\|single_exit_0_valid]` | 模拟弃权 |
-| `twi sim status` | 模拟计时器状态 |
-| `twi subseg status` | subsegment 追踪器状态（回合/关卡/采样与平面数/最近时间差） |
-| `twi preload hold <levelId>` | **M1/M3 验证**：把指定关卡以 additive+休眠方式驻留（不经比赛流程）；主菜单或游玩中的关卡内均可（后者即链式预载形态）。id 同合集配置：内置关用显示名（`Aztec`、`Steam`…，区分大小写）或已订阅的 workshop id |
-| `twi preload swap` | **M1/M3 验证**：把驻留场景换入为当前关（GO 换入序列；勿在 ready 锁定中使用） |
-| `twi preload drop` | 丢弃驻留场景并卸载 |
-| `twi preload status` | 预载器状态（选图/驻留场景/失败原因） |
-| `twi preload rs` | 转储当前全局光照状态（探针/环境光/雾/光照贴图表逐条纹理标识/逐场景 renderer lightmapIndex 直方图/LOD 层状态/进程内存），排查换入光照与内存问题用 |
-| `twi preload mach` | 转储当前关全部机器的关节/物理状态（AngularJoint/Lever/Catapult/铰链角度与驱动目标等），机器异常时当场运行 |
-| `twi preload warm <levelId\|all>` | **保守预载验证**：手动把指定关卡（或 `all` = 全部场景文件 + 共享文件）预读进 OS 页缓存，不经比赛流程（调试与冷/热缓存 A/B 用）；进度见 `twi preload status` 的 `warm:` 行 |
+| `twi connect <host> [port]` | Connect (address is given in the command; default port 8443, default `wss`/`https`) |
+| `twi disconnect` | Disconnect manually (stops auto-reconnect) |
+| `twi disconnect simulate` | Simulate an unexpected disconnect: the connection will auto-reconnect per config, for testing reconnect/resume |
+| `twi status` | Connection / match status |
+| `twi reload` | Hot-reload `TwilightCore.cfg` + `LevelCollections.json` from disk (no game restart needed after editing config files) |
+| `twi sim level_done [ms]` | Simulate the current level/attempt completing (optionally with a duration) |
+| `twi sim skip` | Simulate a skip (N/A) |
+| `twi sim complete [final_ms]` | Simulate the whole round completing |
+| `twi sim forfeit [multi_exit\|single_exit_0_valid]` | Simulate forfeiting |
+| `twi sim status` | Simulated timer status |
+| `twi subseg status` | Subsegment tracker status (round/level, sample and plane counts, latest gap) |
+| `twi preload hold <levelId>` | **M1/M3 validation**: hold the specified level with additive + dormant mode (bypasses match flow); works from the main menu or while inside a level (the latter is the chained preload form). The id follows collection config: built-ins use display names (`Aztec`, `Steam`, …, case-sensitive) or a subscribed workshop id |
+| `twi preload swap` | **M1/M3 validation**: swap the held scene in as the current level (GO swap sequence; do not use during ready lock) |
+| `twi preload drop` | Drop and unload the held scene |
+| `twi preload status` | Preloader status (selected level / held scene / failure reason) |
+| `twi preload rs` | Dump the current global lighting state (probes/ambient/fog/lightmap table with per-entry texture IDs/per-scene renderer lightmapIndex histogram/LOD state/process memory) for investigating swap-in lighting and memory issues |
+| `twi preload mach` | Dump all machine joint/physics state in the current level (AngularJoint/Lever/Catapult/hinge angles and drive targets, etc.) to run immediately when a machine misbehaves |
+| `twi preload warm <levelId\|all>` | **Conservative preload validation**: manually pre-read the specified level (or `all` = all scene files + shared files) into the OS page cache, bypassing match flow (for debugging and cold/hot cache A/B); progress is shown in the `warm:` line of `twi preload status` |
 
-聊天：
+Chat:
 
-- **Ctrl+T**（可由 `Chat.ToggleHotkey` 配置，如 `Ctrl+Shift+Y`、`F8` 等）打开/关闭完整聊天控制台（菜单和局内都可用），输入文本回车发送；`!ready`、`!roll` 等就是普通聊天文本。控制台打开时会接管键盘，游戏不会响应抓取/跳跃（移动键仍可能生效，请停步后再打字）。改完快捷键用 `twi reload` 热生效。
-- 收到消息时（控制台未打开），会自动弹出**仅显示日志（无输入框）**的聊天框，持续 `Chat.PopupSecs`（默认 5 秒）后淡出；有新消息会顺延。可由 `Chat.PopupEnabled` 关闭。
+- **Ctrl+T** (configurable via `Chat.ToggleHotkey`, e.g. `Ctrl+Shift+Y`, `F8`) opens/closes the full chat console (usable both in menus and in-round). Type text and press Enter to send; `!ready`, `!roll`, etc. are ordinary chat text. While the console is open it captures the keyboard, so the game will not respond to grab/jump (movement keys may still work — stop moving before typing). Hotkey changes take effect via `twi reload`.
+- When a message arrives and the console is not open, a **log-only popup (no input box)** appears for `Chat.PopupSecs` (default 5 s) and then fades out; new messages extend it. Can be disabled with `Chat.PopupEnabled`.
 
-## Subsegment 实时时间差追踪
+## Subsegment Real-Time Gap Tracking
 
-多关（MULTI）回合中，双方选手各自跑同一合集，常规上报只有整关完成时间，关内无法比较进度。
-启用 `Features.EnableSubsegment` 后：
+In multi-level (MULTI) rounds, both players run the same collection. Normal reporting only gives whole-level
+completion times, so progress cannot be compared within a level. With `Features.EnableSubsegment` enabled:
 
-- **采样**：每个关卡内，从角色**首次从装死状态苏醒**（进关天降落地 → 3 秒无意识 → 起身）
-  起，到**该关真正过关**为止，每秒记录一次当前总时间、位置、运动向量并上报服务端。
-  注意碰到通关判定区≠过关：游戏流程上要在这之后死亡（坠落或溺水）才触发过关，
-  判定区触碰与真正过关之间的走位/坠落耗时**照常计入**（与整关计时同口径）。
-  关内手动装死、
-  坠崖检查点复活**不会**重置录制（时钟不停，罚时自然计入）。
-- **检测**：服务端把一方的采样中转给对方；对方客户端在每个采样点处生成**垂直于运动向量、
-  半径 `Subsegment.PlaneRadius` 的虚拟平面**（纯数学检测，不创建任何 Unity 碰撞体，
-  不影响关卡物理、不会高速穿隧漏检），本方角色沿运动方向穿越时上报命中时刻。
-  同一平面可**多次穿越、多次上报**（同平面 200ms 防抖）：擦边会往复穿越、曲折路线会
-  绕回旧平面，全部如实上报，由服务端结算裁决。
-- **时间差**：服务端记录双方数据（仅内存、回合级，回合结束即清空），每次**结算**向双方/裁判/
-  导播广播 `subsegment_gap`（穿越方时间 − 采样方时间，正数 = 穿越方落后），供导播 overlay 使用。
-  结算规则（settled-event 模型）：某平面最后一次穿越后约 0.5s 无再穿越才广播，有效时刻取
-  **最后一次**穿越——擦边早触发会被真实穿越顶掉；已结算进度之前的低键（乱序迟到）直接丢弃，
-  画面不回跳；**失败折返重来**时（低键穿越距最近一次穿越 ≥3s，坠落加苏醒本身已超阈）低键
-  重开按当前时刻广播——计时器坠落不清零，数值自带罚时成本、单调增长，画面随真实进度更新
-  而不长时间冻结；结算后同平面再穿越（环路折返）会按键修正（amend），前端展示取最新一条。
-- **过关强制同步**：真实过关时向对方的**末样本**（其过关时刻的最后一条采样）补发一次命中——
-  双方终点必然是同一通关判定区，因此即使路线完全不同、途中一条平面都没碰到，每关也保证
-  恰好一次「通关时间差」比较（由后过关的一方发出；若之前真实跨越过该样本，以真实跨越为准）。
-- **实时计时中转**：同一节拍每秒把计时器当前读数（`total_ms` = `RoundTotalMs`、
-  `segment_ms` = `CurrentSegmentMs`、所在关卡）也上报服务端；若 TwilightTimer
-  提供方还实现了现实时间/墙钟计时，则额外带上 `real_time_ms`（TwilightTimer
-  的 Real Time）。仅中转**裁判/导播**
-  （选手互不感知对手计时），按席暂存最近一条，回合中晚连的裁判/导播握手里立即补发。
-  回合活跃期间持续上报（含加载/出生阶段），与 subsegment 同受
-  `Features.EnableSubsegment` 门控、同依赖真实计时器。SINGLE 回合同样上报
-  live_time（当前尝试的实时分段，重试时计时器清零），但不参与 subsegment
-  平面采样/差距。
-- **时间口径**：时间值直接取 **TwilightTimer**（真实计时器，经 `TimerProviderRegistry` 注册）
-  的 `RoundTotalMs`——与官方计分**同一条时间线**，时间差可直接与成绩对照。采样窗口为
-  每关苏醒 → 真实过关。未注册真实计时器时 subsegment 不工作（**不回退**模拟计时器——
-  那是早期调试占位，后续会弃用）。
-- 选手侧**无任何游戏内显示**（避免实时看到对方进度干扰心态）；`twi subseg status` 查看本地状态。
-- 断线期间样本丢失（可接受）；重连后服务端把对方已存采样按序补放，检测平面自动重建。
-- 需要后端同步升级（新消息类型）；连上未升级的服务端时会在首次 400 后自动停发直到下回合。
+- **Sampling**: in each level, from the character's **first wake from the play-dead state** (drop in from the sky → 3 seconds unconscious → get up)
+  until the level **actually completes**, record once per second: current total time, position, and movement vector, and report to the server.
+  Note that touching the pass zone is not the same as completing: in the game flow, the player must die (fall or drown) after touching it
+  to trigger completion. Walking/falling time between touching the pass zone and actual completion **counts normally** (same basis as whole-level timing).
+  Manually playing dead inside a level or resurrecting at a checkpoint after falling does **not** reset recording (the clock keeps running, so penalties are naturally included).
+- **Detection**: the server relays one player's samples to the other. The receiving client creates a **virtual plane perpendicular to the movement vector**
+  with radius `Subsegment.PlaneRadius` at each sample point (pure math detection; no Unity colliders are created, so it does not affect level physics and cannot tunnel at high speeds).
+  When your character crosses the plane along the movement direction, the hit time is reported.
+  The same plane can be **crossed multiple times and reported multiple times** (200 ms debounce per plane): grazing causes back-and-forth crossings, winding routes loop back to old planes — all are reported honestly and settled by the server.
+- **Gap**: the server keeps both sides' data (memory only, round-scoped; cleared when the round ends). On each **settlement**, it broadcasts
+  `subsegment_gap` to both players/referee/director (`crosser time − sampled time`; positive = crosser is behind), for use by director overlays.
+  Settlement rules (settled-event model): a plane is broadcast after about 0.5 s with no further crossing; the effective time is the **last** crossing —
+  early grazes are superseded by real crossings. Lower keys before the settled progress (out-of-order late arrivals) are dropped, so the overlay never jumps backward.
+  On **failed retry/reversal** (a below-cursor crossing ≥3 s after the seat's last crossing; falling plus waking alone already exceeds that threshold), the below-cursor
+  key is reopened and broadcast at the current time — the timer does not reset on falls, so the number already includes the penalty cost, grows monotonically, and the visual updates with real progress instead of freezing for a long time.
+  After settlement, re-crossing the same plane (loop-back) causes an amend, and the frontend shows the newest entry.
+- **Forced completion sync**: at actual level completion, one extra hit is sent to the opponent's **last sample** (the final sample at their completion time) —
+  both endpoints are necessarily the same pass zone, so even if routes are completely different and no plane is crossed in between, every level is guaranteed exactly one
+  "finish-vs-finish gap" comparison (sent by the side that completes later; if that sample was already genuinely crossed, the real crossing takes precedence).
+- **Real-time timer relay**: on the same beat, every second the current timer reading is also reported to the server
+  (`total_ms` = `RoundTotalMs`, `segment_ms` = `CurrentSegmentMs`, current level). If the TwilightTimer provider also implements real-time/wall-clock timing,
+  it additionally sends `real_time_ms` (TwilightTimer's Real Time). This is relayed **only to referee/director** seats
+  (players cannot perceive each other's timers), with the latest entry kept per seat and replayed immediately to late-connecting referee/director handshakes.
+  Reporting continues throughout active rounds (including load/spawn phases), gated by `Features.EnableSubsegment` and dependent on the real timer just like subsegment.
+  SINGLE rounds also report `live_time` (the live segment of the current attempt; timer resets on retry), but do not participate in subsegment plane sampling/gaps.
+- **Time basis**: time values come directly from **TwilightTimer** (the real timer, registered via `TimerProviderRegistry`)
+  `RoundTotalMs` — the **same timeline** as official scoring, so gaps can be compared directly with results. The sampling window is wake-up in each level → actual completion.
+  If no real timer is registered, subsegment does not work (it does **not** fall back to the simulated timer — that is an early debug placeholder slated for removal).
+- Players see **no in-game display** (to avoid mentally affecting them by seeing the opponent's progress in real time); use `twi subseg status` to inspect local state.
+- Samples lost during disconnects are accepted; after reconnecting, the server replays the opponent's stored samples in order and detection planes are rebuilt automatically.
+- The backend must be upgraded in sync (new message types); if connected to an un-upgraded server, sending stops after the first 400 until the next round.
 
-## 服务端合集配置格式（`collection.raw`）
+## Server Collection Config Format (`collection.raw`)
 
-服务端的 `CollectionConfig` 是不透明字典（`{raw: ...}`），**格式由本插件定义**：
+The server's `CollectionConfig` is an opaque dictionary (`{raw: ...}`); **the format is defined by this plugin**:
 
 ```json
 {
@@ -154,12 +157,11 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 }
 ```
 
-- `levels` 为关卡 ID 字符串数组（BuiltIn / EditorPick / Workshop，自动识别）。
-- **单关项目（`pick.type=SINGLE`）**：`levels` 放单个关卡，插件按 `pick.retry_count`
-  自动重复 N 次（即“自动编排”）。也可手动放多条。
-- 多关项目（`MULTI`）：`levels` 即为关卡顺序。
+- `levels` is an array of level ID strings (BuiltIn / EditorPick / Workshop, auto-detected).
+- **Single-level picks (`pick.type=SINGLE`)**: put one level in `levels`; the plugin automatically repeats it N times according to `pick.retry_count` (i.e. "automatic arrangement"). You may also list multiple entries manually.
+- Multi-level picks (`MULTI`): `levels` is the level order.
 
-创建比赛/图池时，每个选图的 `collection` 字段按此结构填充，例如：
+When creating a match/map pool, each pick's `collection` field is filled with this structure, for example:
 
 ```json
 {
@@ -168,73 +170,65 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 }
 ```
 
-## 关卡预载（held-scene，仅 MULTI）
+## Level Preload (held-scene, MULTI only)
 
-`Features.EnableScenePreload` 开启时，插件会在 PREP 阶段把裁判选定图（**仅 MULTI**）的
-**首关场景**提前加载进内存（additive、全部根物体休眠：不渲染/无物理/无音频），
-`round_start` 瞬间只做轻量"换入"（激活场景 + 复刻游戏自己的
-`AfterLoad` 编排），实现**倒计时结束即在关卡里**。工作方式：
+When `Features.EnableScenePreload` is enabled, during PREP the plugin loads the **first level scene** of the referee-selected pick
+(**MULTI only**) into memory in advance (additive, all root objects dormant: no rendering/no physics/no audio).
+At `round_start`, it only performs a lightweight "swap-in" (activate the scene + replicate the game's own `AfterLoad` orchestration),
+so the player is **already in the level when the countdown ends**. How it works:
 
-- **触发**：收到服务端 `pick_announced`（裁判选图即提前下发合集）+ 本方 `!ready`，
-  且玩家在主菜单。ready-lock 生效后手动进关被锁，预载不会被意外破坏。
-- **上报**：预载状态机向服务端报 `preload_report`（`in_progress`/`done`/`failed`/`na`）；
-  SINGLE 选图固定报 `na`。服务端据此做开局门控（双方预载完成才自动倒计时）。
-- **降级**：预载是优化不是依赖——任何失败（未订阅、下载失败、场景异常、改图）
-  自动回退现有标准加载路径，行为与未开预载完全一致；服务端不支持
-  `pick_announced` 时插件完全闲置（WS 连接会带 `cap=preload1` 能力参数，旧服务端忽略）。
-- **链式预载（`Features.EnableChainedPreload`）**：进入某一关（`PlayingLevel`）后，
-  后台以同样的休眠方式预载合集**下一关**（低优先级分帧加载），过关时直接换入——
-  关间过渡从数秒加载变为帧级切换，计时器边沿/上报不受影响。相邻同关
-  （含 SINGLE 的重复尝试）不预载，走既有 Empty 间隔路径；换关时下一关尚未
-  预载完则回退标准加载。本地 `lc` 合集同样生效（无需服务端）。
-  保持期染色：烘焙探针的关（如 Halloween/Steam）由 `Features.EnableProbeFreeze`
-  修复（保持期内探针系数冻结为玩家处采样值，换入时写回）；未烘焙关由
-  `Features.ProbeFreezeUnbakedHolds` 处理（玩家落在下一关探针凸包内时表现为
-  动态物体全黑、凸包外为轻微染色，两者同源，冻结后消除；换入不写回）。
-  换入完成后自动执行
-  `Resources.UnloadUnusedAssets()` 清扫无引用资产（`Features.
-  PreloadUnloadUnusedAfterSwap`）——additive 预载路径会按不同场景累积泄漏
-  native 资产，长合集最终 OOM 硬崩（已定案），清扫即修复。完整问题清单与
-  修复记录见 `ignored/M3遗留问题调查-反编译实证.md`。
-- **保守预载（磁盘缓存预热，`Features.EnableDiskCacheWarmup`）**：与链式预载互补——
-  单一后台线程（低优先级、固定 1MB 复用缓冲）把关卡的磁盘文件流式读一遍丢弃，装进
-  OS 页缓存（内核管理、可回收，不占进程内存）；此后链式 hold 的读盘即变内存读，仅剩
-  反序列化/集成的 CPU 负担。策略由 `Features.DiskWarmupMode` 选择：**follow-chain**
-  （默认）——PREP 期（首关 hold 完成后）只头暖第 2-3 关，之后每当链式 hold N+1 完成，
-  趁磁盘空闲窗口（上一 hold 已完成、下一 hold 未开始）预热第 N+2 关：页面从预热到
-  使用约隔一关时长（几乎不会被逐出）、稳态占用小、本地 `lc` 练习局同样生效，代价是
-  局内有温和的后台读；**prep-all**——PREP 期一次性暖全部后续关卡（局内零磁盘 IO）。
-  开局（`round_start` 换入）或改图即协作式停止（当前文件读完即止）。内置关文件经
-  引擎 build-settings 场景表映射（真机实证 43/43 场景可映射；映射失败自动退化为预热
-  全部 `level*` 文件），共享资产按场景 build index 邻接裁剪（`sharedassets{N}.*`
-  三件套，全合约 600MB 而非全量 4.1GB），workshop 关只读其加载路径真正读的两个文件
-  （`metadata.json` + `data` 包），未安装项跳过、绝不触发下载。任何失败静默退化为
-  现状。手动触发与冷/热缓存 A/B：`twi preload warm <levelId|all>`；`twi preload
-  status` 的 `warm:` 行含模式与进度。
-- **改图**：裁判重选图会重发 `pick_announced`，插件丢弃旧预载按新合集重来。
-- 调试：`twi preload hold/swap/drop/status/rs/mach` 可在不连服务端的情况下手工验证
-  驻留/换入/卸载（M1 原型，验证方案调研文档 §7 风险 1/2/3 用；关卡内 hold+swap
-  即 M3 链式换入的最小复现，如 `twi preload hold Siege` 后换入验证投石机）。
+- **Trigger**: receives `pick_announced` from the server (the referee's pick sends the collection early) plus your own `!ready`,
+  and the player is at the main menu. After ready-lock is active, manual level entry is locked, so preload cannot be accidentally disrupted.
+- **Reporting**: the preload state machine reports `preload_report` to the server (`in_progress` / `done` / `failed` / `na`);
+  SINGLE picks always report `na`. The server uses this as the round-start gate (the auto countdown begins only after both players' preloads are done).
+- **Degradation**: preload is an optimization, not a dependency — any failure (not subscribed, download failure, scene error, pick change)
+  automatically falls back to the existing standard loading path, behaving exactly as if preload were off. If the server does not support
+  `pick_announced`, the plugin is fully idle (the WS connection carries `cap=preload1`; old servers ignore it).
+- **Chained preload (`Features.EnableChainedPreload`)**: after entering a level (`PlayingLevel`), the plugin preloads the collection's **next level**
+  in the background using the same dormant method (low-priority, frame-spread loading), then swaps it in directly on completion —
+  transitions between levels go from multi-second loads to frame-level switches, and timer edges/reporting are unaffected.
+  Adjacent same levels (including SINGLE repeated attempts) are not preloaded; they use the existing Empty-dwell path. If the next level is not finished preloading at the transition,
+  it falls back to standard loading. Local `lc` collections work too (no server needed).
+  Hold-window tint: baked-probe levels (e.g. Halloween/Steam) are handled by `Features.EnableProbeFreeze`
+  (probe coefficients are frozen to player-sampled values during the hold, written back on swap-in); unbaked levels are handled by
+  `Features.ProbeFreezeUnbakedHolds` (if the player falls inside the next level's probe convex hull, dynamic objects go fully black; outside the hull there is a slight tint — both share the same cause and are removed by the freeze; no write-back on swap-in).
+  After swap-in, `Resources.UnloadUnusedAssets()` automatically cleans unreferenced assets (`Features.PreloadUnloadUnusedAfterSwap`) —
+  the additive preload path leaks native assets per distinct scene, and long collections eventually hard-crash with OOM (confirmed); this cleanup fixes it.
+  The full issue list and fix history are in `ignored/M3遗留问题调查-反编译实证.md`.
+- **Conservative preload (disk cache warmup, `Features.EnableDiskCacheWarmup`)**: complementary to chained preload —
+  a single background thread (low priority, fixed 1 MB reusable buffer) streams each level's disk files through and discards them, filling the
+  OS page cache (managed by the kernel, reclaimable, does not consume process memory); after that, chained hold disk reads become memory reads, leaving only
+  deserialization/integration CPU work. The strategy is selected by `Features.DiskWarmupMode`: **follow-chain**
+  (default) — during PREP (after the first-level hold completes) only head-warm levels 2–3; then after each chained hold of level N+1 completes,
+  warm level N+2 in the disk-idle window (previous hold done, next hold not started): pages survive about one level duration before use (rarely evicted), steady-state footprint is small,
+  local `lc` practice runs also benefit, at the cost of mild background reads in-round; **prep-all** — warm all remaining levels once during PREP (zero in-round disk I/O).
+  At round start (`round_start` swap) or on pick change, warmup stops cooperatively (finishes the current file). Built-in level files are mapped through the engine's
+  build-settings scene table (verified on real hardware: 43/43 scenes mapped; on mapping failure it degrades to warming all `level*` files),
+  shared assets are trimmed by scene build-index adjacency (`sharedassets{N}.*` trio, about 600 MB per collection rather than the full 4.1 GB),
+  workshop levels read only the two files actually used by their load path (`metadata.json` + `data` bundle), uninstalled items are skipped and never trigger downloads.
+  Any failure silently degrades to current behavior. Manual trigger and cold/hot cache A/B: `twi preload warm <levelId|all>`; `twi preload status`'s `warm:` line shows mode and progress.
+- **Pick change**: if the referee re-picks, `pick_announced` is sent again; the plugin discards the old preload and restarts with the new collection.
+- Debug: `twi preload hold/swap/drop/status/rs/mach` can manually validate holding/swap-in/unload without connecting to a server
+  (M1 prototype, used for risks 1/2/3 in the design research doc §7; hold+swap inside a level is the minimum reproduction of M3 chained swap-in, e.g. `twi preload hold Siege` then swap to verify the catapult).
 
-> 完整设计见 `ignored/激进预载held-scene方案调研.md`；服务端侧（`pick_announced`
-> 提前下发 + 预载门控）见 `ignored/需求-合集提前下发与预载门控.md`（后端实现后生效）。
+> Full design: `ignored/激进预载held-scene方案调研.md`; server side (`pick_announced` push + preload gating): `ignored/需求-合集提前下发与预载门控.md` (takes effect after backend implementation).
 
-## 端到端联调（服务端已存在）
+## End-to-End Integration (with an existing server)
 
-1. 起后端：`cd TwilightCupBackend && uv run uvicorn twilightcupbackend.main:app --reload`（需本地 MongoDB）。
-2. 用管理员账号建选手/裁判/导播账号，创建会话（指派人员、图池，每个 pick 的
-   `collection.raw` 按上节格式）。
-3. 选手端：编辑 `TwilightCore.cfg`（Username/Password），启动游戏 → 控制台输入 `twi connect <公网IP>`（默认端口 8443、默认走 `wss`/`https`，即 `https://<公网IP>:8443`：登录走 `/api/auth/login`，WS 走 `/ws/{token}`）→ 控制台依次回显登录/连接/已连接 → 收到 `auth_ok`。直连本地裸后端时用 `twi connect <本机IP> 8000` 并在 cfg 里把 `Server.UseTLS=false`（此时登录路径需为裸 `/auth/login`，不走 `/api`——仅本地无 nginx 时）。
-4. 裁判端 `referee_mark_prep` → 选手 `!ready` → 双方就绪 → 观察 `countdown_tick` → `round_start` 下发 → 选手端自动加载合集第一关并按 LC 流程推进。
-5. **模拟计时器**：真实通关会自动上报；或用 `twi sim level_done 12345` / `twi sim skip` / `twi sim complete` / `twi sim forfeit` 手动驱动 → 双方 terminal 后服务端进 `ROUND_JUDGING` → 裁判 `referee_verdict` → `round_result` + `cumulative_score` 正确。
+1. Start the backend: `cd TwilightCupBackend && uv run uvicorn twilightcupbackend.main:app --reload` (requires local MongoDB).
+2. Create player/referee/director accounts with an admin account, then create a session (assign people, map pool; each pick's `collection.raw` follows the format above).
+3. Player side: edit `TwilightCore.cfg` (Username/Password), start the game → in the console enter `twi connect <public IP>` (default port 8443, default `wss`/`https`, i.e. `https://<public IP>:8443`: login via `/api/auth/login`, WS via `/ws/{token}`) → the console displays login/connecting/connected in sequence → receive `auth_ok`. For a direct local plain backend, use `twi connect <local IP> 8000` and set `Server.UseTLS=false` in the cfg (then the login path must be the bare `/auth/login`, not `/api` — only for local no-nginx setups).
+4. Referee runs `referee_mark_prep` → player runs `!ready` → both ready → observe `countdown_tick` → `round_start` is pushed → the player side automatically loads the collection's first level and proceeds through the LC flow.
+5. **Simulated timer**: real completions are reported automatically; or manually drive with `twi sim level_done 12345` / `twi sim skip` / `twi sim complete` / `twi sim forfeit` → after both players finish, the server enters `ROUND_JUDGING` → referee runs `referee_verdict` → `round_result` + `cumulative_score` are correct.
 
-## 已知限制 / 待办
+## Known Limitations / TODO
 
-- **真实计时器**：未实现（本期用 `SimulatedTimer` 占位）。
-- **预载端到端**：held-scene 预载依赖服务端 `pick_announced`/门控（后端 R1/R2）；
-  后端上线前仅可用 `twi preload …` 手工验证，正式比赛回合不受影响（自动走标准加载）。
-- **重连重载合集**：回合中断线重连只补传双方状态快照，不会重新下发/加载合集配置
-  （服务端 `reconnect_resync` 不含 pick/collection）；游戏崩溃后需手动重进。
-  同一进程内的临时断连不会停止计时器，断线期间产生的上报会缓存并在重连后补发
-  （`twi disconnect simulate` 可模拟该路径）。
-- **聊天**：独立的 OnGUI 控制台（Ctrl+T），不依赖游戏内置 `NetChat`（后者在单人/菜单下被游戏锁死）。打开时仅抑制抓取/跳跃输入，**移动键（WASD）仍会生效**——停步后再打字；如需完全屏蔽移动，后续可在控制台打开时挂 `HumanControls` 补丁。
+- **Real timer**: not implemented yet (currently using `SimulatedTimer` as a placeholder).
+- **Preload end-to-end**: held-scene preload depends on server-side `pick_announced`/gating (backend R1/R2);
+  before backend availability, only manual `twi preload …` validation is possible; official match rounds are unaffected (they automatically use standard loading).
+- **Reconnect reloading collections**: on disconnect/reconnect mid-round, only both sides' state snapshots are replayed; the pick/collection config is not re-sent/reloaded
+  (the server's `reconnect_resync` does not include pick/collection); after a game crash, manual re-entry is required.
+  Temporary disconnects within the same process do not stop the timer; reports produced while disconnected are buffered and resent on reconnect
+  (`twi disconnect simulate` can simulate this path).
+- **Chat**: an independent OnGUI console (Ctrl+T) that does not depend on the game's built-in `NetChat` (the latter is locked by the game in single-player/menus).
+  While open it only suppresses grab/jump input; **movement keys (WASD) still work** — stop moving before typing. If fully blocking movement is desired, a `HumanControls` patch could be attached while the console is open later.
