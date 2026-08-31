@@ -711,6 +711,7 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             { "t_ms", CurrentTotalMs() },
             { "px", pos.x }, { "py", pos.y }, { "pz", pos.z },
             { "dx", dir.x }, { "dy", dir.y }, { "dz", dir.z },
+            { "plane_radius", TwilightConfig.SubsegmentPlaneRadius.Value },
         });
         _seq++;
         _lastSubsegSendRealtime = Time.realtimeSinceStartup;
