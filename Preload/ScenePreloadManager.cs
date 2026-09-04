@@ -639,6 +639,14 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             FailPipeline(held, "LoadSceneAsync returned null for '" + sceneName + "'");
             yield break;
         }
+        // 3.2.2: operation-level priority (more granular than the global
+        // Application.backgroundLoadingPriority). Best-effort: Unity builds do
+        // not all expose the same semantics, so failure is only logged.
+        try { op.priority = 0; }
+        catch (Exception e)
+        {
+            Plugin.Logger.LogWarning("[Preload] failed to set AsyncOperation.priority: " + e.Message);
+        }
         while (!op.isDone)
             yield return null;   // drops can't cancel an in-flight load on 2017.4 — the hook already dormified it; discard happens below
         _awaitingSceneName = null;
