@@ -177,9 +177,21 @@ internal static class TwilightConfig
     /// always-on subsegment lines still log.
     /// </summary>
     public static ConfigEntry<bool> DebugSubsegmentLogger;
+    /// <summary>
+    /// Chained-preload frame-spike instrumentation: while a chained hold is in
+    /// flight, maintain a rolling frame-time window (Time.unscaledDeltaTime) and
+    /// attach the spike summary (average/max/&gt;50/&gt;80/&gt;120ms counts) to
+    /// the load start / sceneLoaded / freeze done / dormant lines, plus
+    /// per-stage wall-clock timing lines. Pure logging — behavior is identical
+    /// either way. Hot-reloadable via `twi reload`.
+    /// </summary>
+    public static ConfigEntry<bool> DebugChainedPreloadFrameSpikes;
 
     /// <summary>Whether DebugPreloadLogger is on (null-safe before Init).</summary>
     internal static bool PreloadDebugLogging => DebugPreloadLogger != null && DebugPreloadLogger.Value;
+
+    /// <summary>Whether DebugChainedPreloadFrameSpikes is on (null-safe before Init).</summary>
+    internal static bool ChainedFrameSpikeLogging => DebugChainedPreloadFrameSpikes != null && DebugChainedPreloadFrameSpikes.Value;
 
     /// <summary>Whether DebugSubsegmentLogger is on (null-safe before Init).</summary>
     internal static bool SubsegmentDebugLogging => DebugSubsegmentLogger != null && DebugSubsegmentLogger.Value;
@@ -277,6 +289,10 @@ internal static class TwilightConfig
             "plane creation and crossing checks, hits, completion sync decisions, and idle reasons). Pure logging — " +
             "behavior is identical either way; warnings/errors and the normal subsegment status lines always log. " +
             "Hot-reloadable via `twi reload`.");
+        DebugChainedPreloadFrameSpikes = config.Bind("Debug", "DebugChainedPreloadFrameSpikes", false,
+            "Chained-preload frame-spike instrumentation: while a chained hold is in flight, keep a rolling " +
+            "frame-time window (Time.unscaledDeltaTime) and output spike/percentile summary + per-stage timing " +
+            "on the key hold lines. Pure logging — behavior is identical either way. Hot-reloadable via `twi reload`.");
     }
 
     /// <summary>

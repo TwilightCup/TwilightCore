@@ -99,6 +99,12 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private string _announcedKey;
     private bool _doneReported;   // re-arm: re-report done after un-ready→ready cycles (server resets state)
 
+    // Chained-preload frame-spike instrumentation (调研 §3.4): a rolling
+    // frame window sampled during each chained hold, plus a stage-timing
+    // anchor for the pipeline's per-stage wall-clock lines.
+    private readonly FrameSpikeMonitor _frameSpikes = new FrameSpikeMonitor();
+    private float _lastStageTime;
+
     private void Awake()
     {
         if (Instance != null)
@@ -311,6 +317,8 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     /// </summary>
     private void Update()
     {
+        _frameSpikes.Sample(Time.unscaledDeltaTime);   // no-op unless a chained-hold window is active
+
         if (!TwilightConfig.EnableChainedPreload.Value) return;
         if (!EnableScenePreloadOn) return;
         if (_pipeline != null || _dropRequested) return;
@@ -386,6 +394,35 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         return Vector3.zero;
     }
 
+    // ── Chained-preload frame-spike instrumentation helpers (调研 §3.4) ──────
+
+    /// <summary>Whether frame-spike/stage-timing logging is active for a chained hold.</summary>
+    private static bool ChainedFrameLoggingActive(bool chained) =>
+        chained && TwilightConfig.ChainedFrameSpikeLogging;
+
+    private void ResetStageTiming()
+    {
+        _lastStageTime = Time.realtimeSinceStartup;
+    }
+
+    /// <summary>Emit one per-stage timing line (only under the new chained-spike switch).</summary>
+    private void LogStageTiming(HeldScene held, string stage)
+    {
+        if (!ChainedFrameLoggingActive(held.Chained)) return;
+        float now = Time.realtimeSinceStartup;
+        Plugin.Logger.LogInfo(
+            $"[Preload] stage timing: {stage} '{held.LevelId}' +{(now - _lastStageTime) * 1000f:0}ms frame={Time.deltaTime * 1000f:0}ms");
+        _lastStageTime = now;
+    }
+
+    /// <summary>Compact frame-window suffix (empty unless a chained window is active).</summary>
+    private string FrameSpikeSuffix()
+    {
+        return TwilightConfig.ChainedFrameSpikeLogging && _frameSpikes.IsEnabled
+            ? _frameSpikes.Summary()
+            : string.Empty;
+    }
+
     // ── P-phase pipeline (调研 §3.1) ─────────────────────────────────────────
 
     /// <summary>
@@ -416,6 +453,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         _gotPendingScene = false;
         if (matchDriven) Report("in_progress");
         Plugin.Logger.LogInfo($"[Preload] pipeline start: '{levelId}' (matchDriven={matchDriven})");
+        if (ChainedFrameLoggingActive(chained))
+        {
+            _frameSpikes.Begin();
+            ResetStageTiming();
+        }
 
         // Reject unknown ids up front. FindBuiltInLevelIndex silently falls back
         // to index 0 (Intro) for legacy-launch leniency — preloading that
@@ -516,6 +558,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
 
         held.Metadata = meta;
         held.SceneName = sceneName;
+        LogStageTiming(held, "resolve");
 
         // ── capture the global lighting state BEFORE the load ──
         // The additive load switches lightProbes / lightmapsMode to the new
@@ -585,9 +628,9 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // of what the engine was handed: if the outgoing swap's unload failed
         // to remove its lightmap entries, the stale/freed IDs show up HERE
         // (the integration then walks them).
-        if (TwilightConfig.PreloadDebugLogging)
+        if (TwilightConfig.PreloadDebugLogging || ChainedFrameLoggingActive(held.Chained))
             Plugin.Logger.LogInfo(
-                $"[Preload] load start: '{sceneName}' — pre-load table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}");
+                $"[Preload] load start: '{sceneName}' — pre-load table {LightingDiagnostics.FormatTableIds(LightingDiagnostics.TableIds())} scenes={SceneManager.sceneCount} {LightingDiagnostics.MemorySignature()}{FrameSpikeSuffix()}");
 
         AsyncOperation op = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Additive);
         if (op == null)
@@ -622,6 +665,10 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             FailPipeline(held, held.FailDetail ?? "scene capture failed");   // held.Scene is set → really unloads
             yield break;
         }
+        LogStageTiming(held, "sceneLoaded");
+        if (ChainedFrameLoggingActive(held.Chained))
+            Plugin.Logger.LogInfo(
+                $"[Preload] sceneLoaded: '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}{FrameSpikeSuffix()}");
 
         if (_dropRequested || !HoldStillWanted(held))
         {
@@ -800,7 +847,8 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             }
         }
 
-        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}");
+        LogStageTiming(held, "freeze done");
+        Plugin.Logger.LogInfo($"[Preload] dormant: '{levelId}' scene '{held.SceneName}' roots={held.Roots.Length} bundle={(held.Bundle != null ? "yes" : "no")}{FrameSpikeSuffix()}");
         TwilightLog.Print($"[Preload] '{levelId}' held dormant (scene '{held.SceneName}', {held.Roots.Length} roots) — twi preload swap");
         if (matchDriven)
         {
@@ -818,6 +866,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             // flag) never trigger warming.
             DiskWarmup.WarmAfterChainedHold();
         }
+        if (ChainedFrameLoggingActive(chained)) _frameSpikes.End();
         PipelineExited();
     }
 
@@ -916,6 +965,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void DiscardLoadedScene(HeldScene held, string reason)
     {
         Plugin.Logger.LogInfo($"[Preload] discarding held scene '{held.SceneName}': {reason}");
+        if (ChainedFrameLoggingActive(held.Chained)) _frameSpikes.End();
         held.State = HeldSceneState.Invalid;
         held.FailDetail = reason;
         ReleaseHeld(held);   // held.Scene was set at capture — this really unloads
@@ -926,6 +976,7 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void FailPipeline(HeldScene held, string detail)
     {
         Plugin.Logger.LogWarning($"[Preload] failed ('{held.LevelId}'): {detail}");
+        if (ChainedFrameLoggingActive(held.Chained)) _frameSpikes.End();
         TwilightLog.Print($"[Preload] hold failed: {detail}");
         held.State = HeldSceneState.Invalid;
         held.FailDetail = detail;
