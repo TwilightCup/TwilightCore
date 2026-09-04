@@ -14,6 +14,10 @@ internal enum HeldSceneState
     Downloading,
     /// <summary>Additive LoadSceneAsync in flight.</summary>
     LoadingScene,
+    /// <summary>Additive background load finished (allowSceneActivation=false, progress≈0.9); waiting to be activated by the swap.</summary>
+    ReadyToActivate,
+    /// <summary>Staged swap has released allowSceneActivation=true and is waiting for sceneLoaded/capture.</summary>
+    Activating,
     /// <summary>Loaded, roots deactivated, invisible to the game — ready to swap in.</summary>
     Dormant,
     /// <summary>Consumed by a swap-in (or the round started without it).</summary>
@@ -42,6 +46,9 @@ internal sealed class HeldScene
 
     /// <summary>Scene name the level lives in (resolved like Game.LoadLevel does).</summary>
     public string SceneName;
+
+    /// <summary>In-flight LoadSceneAsync for staged (allowSceneActivation=false) holds; null when not staged or after completion.</summary>
+    public AsyncOperation LoadOp;
 
     /// <summary>Additive scene handle (valid once loaded).</summary>
     public Scene Scene;

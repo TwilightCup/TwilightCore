@@ -81,6 +81,15 @@ internal static class TwilightConfig
     /// </summary>
     public static ConfigEntry<bool> EnableChainedPreload;
     /// <summary>
+    /// Staged chained preload (3.3.1): start LoadSceneAsync with
+    /// allowSceneActivation=false for chained holds, so the engine finishes the
+    /// background deserialisation/asset preparation during play while object
+    /// Awake/OnEnable (scene integration) is deferred to the swap-in window.
+    /// If Unity 2017.4 semantics on a target machine disagree, set false to fall
+    /// back to the old eager chained hold.
+    /// </summary>
+    public static ConfigEntry<bool> EnableStagedChainedPreload;
+    /// <summary>
     /// Tinting fix for held-scene preloads: overwrite the active light-probe
     /// set's coefficients with a uniform field (sampled at the player before the
     /// load) for the hold window, and write the held scene's real coefficients
@@ -240,6 +249,10 @@ internal static class TwilightConfig
             "M3 chained preload: while playing a collection level, preload the NEXT level additively (dormant, " +
             "low priority) and swap it in at level advance (frame-level transitions). Works for local lc runs too; " +
             "adjacent same levels never preload (Empty-dwell path). Disable if in-round loading hurts framerate.");
+        EnableStagedChainedPreload = config.Bind("Features", "EnableStagedChainedPreload", true,
+            "Staged chained preload (3.3.1): load chained holds with allowSceneActivation=false so object Awake/OnEnable " +
+            "integration is deferred from gameplay to the swap-in window. Set false if a Unity build's 2017.4 staged " +
+            "loading semantics misbehave; eager chained preload is the fallback.");
         EnableProbeFreeze = config.Bind("Features", "EnableProbeFreeze", true,
             "Tinting fix: freeze the active light-probe coefficients to a uniform field (sampled at the player " +
             "before the preload load) for the hold window; the swap writes the held scene's real coefficients back. " +
