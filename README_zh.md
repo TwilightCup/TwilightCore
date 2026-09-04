@@ -34,6 +34,7 @@ cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
 | `Account.Password` | _(空)_ | 选手账号口令（明文存储，仅用于换 JWT） |
 | `Account.Seat` | _(空)_ | `PLAYER_A`/`PLAYER_B`；留空由服务端按会话指派自动解析 |
 | `Net.HeartbeatSecs` | `20` | 心跳间隔 |
+| `Net.UtcTimestampSecs` | `5` | 连接比赛服后按固定间隔向服务端上报 UTC 时间戳的秒数；`0` 关闭。服务端会将最近值转发给裁判/导播端用于时钟同步 |
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | 断线指数退避（重连沿用上次 `twi connect` 的地址） |
 | `Features.EnableReadyLock` | `true` | 准备阶段 `!ready` 之后、以及倒计时阶段锁定手动进关（未 ready 前可自由练习） |
 | `Features.EnableSimTimer` | `true` | 启用模拟计时器上报 |

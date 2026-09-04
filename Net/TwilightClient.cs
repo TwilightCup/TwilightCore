@@ -221,6 +221,7 @@ public class TwilightClient : MonoBehaviour
                 // the backfilled progress.
                 FlushOutbox();
                 OnAuthenticated?.Invoke(msg);
+                StartCoroutine(UtcTimestampLoop());
             });
             return;
         }
@@ -273,6 +274,36 @@ public class TwilightClient : MonoBehaviour
             yield return wait;
         }
     }
+
+    // ── UTC timestamp reporting ─────────────────────────────────────
+    // After auth_ok, the client sends the player's current UTC wall-clock
+    // timestamp to the match server at a configurable fixed interval. The
+    // server relays the latest value to referee/director seats for clock
+    // sync/monitoring. Interval is read fresh each loop, so `twi reload`
+    // can change it without a reconnect.
+    private IEnumerator UtcTimestampLoop()
+    {
+        while (IsConnected && IsAuthenticated)
+        {
+            int secs = TwilightConfig.UtcTimestampSecs.Value;
+            if (secs <= 0) yield break;
+            SendUtcTimestamp();
+            yield return new WaitForSeconds(secs);
+        }
+    }
+
+    private void SendUtcTimestamp()
+    {
+        long utcMs = (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
+        Send(new Dictionary<string, object>
+        {
+            { "type", Msg.UtcTimestamp },
+            { "utc_ms", utcMs },
+        });
+    }
+
+    private static readonly DateTime UnixEpoch =
+        new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     // ── Reconnect ───────────────────────────────────────────────────
 

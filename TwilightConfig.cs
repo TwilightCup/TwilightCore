@@ -33,6 +33,8 @@ internal static class TwilightConfig
 
     // ── Net ────────────────────────────────────────────────────────
     public static ConfigEntry<int> HeartbeatSecs;
+    /// <summary>Interval (seconds) for periodic UTC timestamp reporting to the match server. 0 disables.</summary>
+    public static ConfigEntry<int> UtcTimestampSecs;
     public static ConfigEntry<int> ReconnectMinBackoffSecs;
     public static ConfigEntry<int> ReconnectMaxBackoffSecs;
 
@@ -195,6 +197,8 @@ internal static class TwilightConfig
         Seat = config.Bind("Account", "Seat", "", "Explicit seat (PLAYER_A/PLAYER_B); blank = auto-resolve.");
 
         HeartbeatSecs = config.Bind("Net", "HeartbeatSecs", 20, "WebSocket heartbeat interval (seconds).");
+        UtcTimestampSecs = config.Bind("Net", "UtcTimestampSecs", 5,
+            "UTC timestamp reporting interval (seconds). 0 disables periodic UTC timestamp messages.");
         ReconnectMinBackoffSecs = config.Bind("Net", "ReconnectMinBackoffSecs", 1, "Initial reconnect backoff (seconds).");
         ReconnectMaxBackoffSecs = config.Bind("Net", "ReconnectMaxBackoffSecs", 30, "Maximum reconnect backoff (seconds).");
 

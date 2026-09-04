@@ -9,6 +9,7 @@ internal static class Msg
     // ── Client → Server (only the ones this plugin sends) ───────────
     public const string Chat = "chat";
     public const string Heartbeat = "heartbeat";
+    public const string UtcTimestamp = "utc_timestamp";
     public const string ReconnectResync = "reconnect_resync";
     // Timer/reporter messages (sent by the simulated timer):
     public const string LevelTimeUpload = "level_time_upload";

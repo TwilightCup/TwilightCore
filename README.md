@@ -41,6 +41,7 @@ matching the public nginx HTTPS entry). nginx same-origin reverse proxy: `/api/.
 | `Account.Password` | *(empty)* | Player account password (stored in plaintext, used only to exchange for JWT) |
 | `Account.Seat` | *(empty)* | `PLAYER_A` / `PLAYER_B`; if left empty, the server assigns it automatically from the session |
 | `Net.HeartbeatSecs` | `20` | Heartbeat interval |
+| `Net.UtcTimestampSecs` | `5` | Interval between UTC timestamp reports to the match server (seconds; `0` disables). The latest value is relayed to referee/director seats for clock sync |
 | `Net.ReconnectMinBackoffSecs` / `Max` | `1` / `30` | Exponential disconnect backoff (reconnect reuses the address from the last `twi connect`) |
 | `Features.EnableReadyLock` | `true` | Lock manual level entry after `!ready` in the prep phase and during countdown (players may practice freely before `!ready`) |
 | `Features.EnableSimTimer` | `true` | Enable simulated timer reporting |
