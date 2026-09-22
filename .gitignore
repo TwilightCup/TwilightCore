@@ -8,6 +8,9 @@ obj/
 # Internal docs (local only)
 docs/
 
+# Machine-local build references
+Directory.Build.user.props
+
 # IDE
 .vs/
 .vscode/

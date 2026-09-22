@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <AssemblyName>TwilightCore</AssemblyName>
     <Product>TwilightCore</Product>
-    <Version>0.1.0</Version>
+    <Version>0.0.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <RootNamespace>TwilightCore</RootNamespace>
@@ -186,15 +186,12 @@
   </ItemGroup>
 
   <!--
-    Default paths point at the macOS Steam install. Override on the command line for
-    other machines, e.g.:
-      dotnet build -c Release \
-        -p:GAME_MANAGED="/path/Human_Data/Managed" \
-        -p:BEPINEX_CORE="/path/BepInEx/core"
+    Keep the assembly identity as TwilightCore for external plugin
+    compatibility, but also emit a versioned filename for releases.
   -->
-  <PropertyGroup>
-    <GAME_MANAGED>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/Human.app/Contents/Resources/Data/Managed</GAME_MANAGED>
-    <BEPINEX_CORE>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/BepInEx/core</BEPINEX_CORE>
-  </PropertyGroup>
+  <Target Name="CopyVersionedDll" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)TwilightCore-v$(Version).dll" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).pdb" DestinationFiles="$(TargetDir)TwilightCore-v$(Version).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+  </Target>
 
 </Project>

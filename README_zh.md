@@ -13,13 +13,17 @@
 
 ## 安装 / 构建
 
+引用（游戏 DLL、BepInEx、Unity 模块）从 `GAME_MANAGED` / `BEPINEX_CORE` 解析。
+在本机创建（已被 gitignore 的）`Directory.Build.user.props` 写入本机路径（参见 `Directory.Build.props`），
+或构建前导出这两个环境变量：
+
 ```bash
-# 默认路径指向 macOS Steam 安装；其它机器用 -p 覆盖
-dotnet build -c Release \
-  -p:GAME_MANAGED="/path/Human_Data/Managed" \
-  -p:BEPINEX_CORE="/path/BepInEx/core"
-cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
+dotnet build -c Release
 ```
+
+产物：`bin/Release/netstandard2.0/TwilightCore.dll`，并附带带版本号的副本 `TwilightCore-v{version}.dll`。
+部署时把带版本号的副本和 `lib/pbc_net40/BouncyCastle.Crypto.dll` 复制到 `<game>/BepInEx/plugins/`
+（不要再放未带版本号的 `TwilightCore.dll`，否则 BepInEx 会重复加载插件）。
 
 若之前装过独立 `LevelCollections.dll`，请移走（TwilightCore 已内置，否则会出现两个合集按钮）。
 

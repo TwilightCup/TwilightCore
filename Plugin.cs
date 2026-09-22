@@ -21,13 +21,6 @@ public class Plugin : BaseUnityPlugin
 {
     internal static new ManualLogSource Logger;
 
-    internal static class PluginInfo
-    {
-        public const string PLUGIN_GUID = "TwilightCore";
-        public const string PLUGIN_NAME = "TwilightCore";
-        public const string PLUGIN_VERSION = "0.1.0";
-    }
-
     private void Awake()
     {
         Logger = base.Logger;

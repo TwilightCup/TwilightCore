@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+    Machine-local reference locations are kept out of the repository.
+    Create Directory.Build.user.props (gitignored) to set GAME_MANAGED and
+    BEPINEX_CORE for this machine, or export those variables in the environment
+    before invoking `dotnet build` (CI / other machines).
+  -->
+  <Import Project="Directory.Build.user.props" Condition="Exists('Directory.Build.user.props')" />
+
+  <Target Name="CheckReferencePaths" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition=" '$(GAME_MANAGED)' == '' or '$(BEPINEX_CORE)' == '' "
+           Text="GAME_MANAGED and BEPINEX_CORE must be set. Create Directory.Build.user.props (see .gitignore) or export them before building." />
+  </Target>
+
+</Project>

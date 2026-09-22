@@ -1,0 +1,181 @@
+name: Release
+
+# Triggered only when the main branch is pushed (after a version branch is
+# merged/pushed). The tag this workflow pushes does not re-trigger it, because
+# the filter below only looks at branches.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: self-hosted
+
+    # The self-hosted runner must already have the game/BepInEx reference DLLs
+    # available; pass their absolute paths through repository secrets:
+    #   GAME_MANAGED  -> the game's Managed directory (Assembly-CSharp.dll, HumanAPI.dll, UnityEngine*.dll, ...)
+    #   BEPINEX_CORE  -> the BepInEx core directory (BepInEx.dll, BepInEx.Harmony.dll, 0Harmony.dll)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for existing .NET SDK
+        id: dotnet-check
+        shell: bash
+        run: |
+          if command -v dotnet >/dev/null 2>&1 && dotnet --version >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Using machine dotnet:"
+            dotnet --info | sed -n '1,20p'
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No usable machine dotnet found; will install a fallback SDK."
+          fi
+
+      - name: Setup .NET (fallback)
+        if: steps.dotnet-check.outputs.found != 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+        env:
+          # Self-hosted runners often cannot write to /usr/share/dotnet.
+          # Install the SDK into a writable temp directory when no machine SDK
+          # is available.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' TwilightCore.csproj | head -n1 | tr -d '[:space:]')"
+          PLUGIN_VERSION="$(sed -n 's/.*PLUGIN_VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' PluginInfo.cs | head -n1 | tr -d '[:space:]')"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Unable to read <Version> from TwilightCore.csproj"
+            exit 1
+          fi
+
+          if [ -z "$PLUGIN_VERSION" ]; then
+            echo "::error::Unable to read PLUGIN_VERSION from PluginInfo.cs"
+            exit 1
+          fi
+
+          if [ "$VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::Version mismatch: csproj=$VERSION, PluginInfo=$PLUGIN_VERSION"
+            exit 1
+          fi
+
+          # main must not carry the dev placeholder version (0.0.0).
+          if [ "$VERSION" = "0.0.0" ] || [ "$VERSION" = "dev" ]; then
+            echo "::error::Refusing to release a non-release version ($VERSION) from main"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare game/BepInEx reference assemblies
+        shell: bash
+        env:
+          GAME_MANAGED: ${{ secrets.GAME_MANAGED }}
+          BEPINEX_CORE: ${{ secrets.BEPINEX_CORE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GAME_MANAGED:-}" ] || [ -z "${BEPINEX_CORE:-}" ]; then
+            echo "::error::Missing GAME_MANAGED or BEPINEX_CORE secret. Set both on the self-hosted runner."
+            exit 1
+          fi
+
+          if [ ! -d "$GAME_MANAGED" ]; then
+            echo "::error::GAME_MANAGED is not a directory on this runner: $GAME_MANAGED"
+            exit 1
+          fi
+
+          if [ ! -d "$BEPINEX_CORE" ]; then
+            echo "::error::BEPINEX_CORE is not a directory on this runner: $BEPINEX_CORE"
+            exit 1
+          fi
+
+          echo "Using GAME_MANAGED=$GAME_MANAGED"
+          echo "Using BEPINEX_CORE=$BEPINEX_CORE"
+          echo "GAME_MANAGED=$GAME_MANAGED" >> "$GITHUB_ENV"
+          echo "BEPINEX_CORE=$BEPINEX_CORE" >> "$GITHUB_ENV"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build TwilightCore.csproj -c Release
+
+      - name: Verify versioned DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          DLL="bin/Release/netstandard2.0/TwilightCore-v${{ steps.version.outputs.version }}.dll"
+          if [ ! -f "$DLL" ]; then
+            echo "::error::Expected build output not found: $DLL"
+            exit 1
+          fi
+          echo "Artifact: $DLL"
+
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          notes_file="release-notes.md"
+
+          awk -v ver="## $VERSION" '
+            $0 == ver { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$notes_file"
+
+          if [ ! -s "$notes_file" ]; then
+            echo "::error::No CHANGELOG entry found for version $VERSION"
+            exit 1
+          fi
+
+          echo "Extracted release notes from CHANGELOG.md for $VERSION"
+
+      - name: Create and push version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping creation."
+          else
+            git tag -a "$TAG" -m "TwilightCore ${{ steps.version.outputs.version }}"
+            git push origin "$TAG"
+            echo "Pushed tag $TAG."
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: TwilightCore v${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            bin/Release/netstandard2.0/TwilightCore-v${{ steps.version.outputs.version }}.dll
+            lib/pbc_net40/BouncyCastle.Crypto.dll
+          fail_on_unmatched_files: true

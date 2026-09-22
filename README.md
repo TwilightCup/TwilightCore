@@ -15,13 +15,17 @@ without depending on a real timer.
 
 ## Installation / Build
 
+References (game DLLs, BepInEx, Unity modules) resolve from `GAME_MANAGED` / `BEPINEX_CORE`.
+Create a gitignored `Directory.Build.user.props` (see `Directory.Build.props`) with this machine's paths,
+or export the two variables before building:
+
 ```bash
-# Default path points to a macOS Steam install; override with -p on other machines
-dotnet build -c Release \
-  -p:GAME_MANAGED="/path/Human_Data/Managed" \
-  -p:BEPINEX_CORE="/path/BepInEx/core"
-cp bin/Release/netstandard2.0/TwilightCore.dll "<game>/BepInEx/plugins/"
+dotnet build -c Release
 ```
+
+Output: `bin/Release/netstandard2.0/TwilightCore.dll` plus a versioned copy `TwilightCore-v{version}.dll`.
+Deploy the versioned copy plus `lib/pbc_net40/BouncyCastle.Crypto.dll` to `<game>/BepInEx/plugins/`
+(do not also drop the unversioned `TwilightCore.dll`, or BepInEx loads the plugin twice).
 
 If you previously installed a standalone `LevelCollections.dll`, remove it (TwilightCore now includes it;
 having both would create two collection buttons).
