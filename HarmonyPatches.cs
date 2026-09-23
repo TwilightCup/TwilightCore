@@ -125,10 +125,20 @@ internal static class HarmonyPatches
     private static void PauseLeave_Prefix()
     {
         var mgr = CollectionManager.Instance;
-        if (mgr == null || !mgr.IsInCollectionRun)
-            return;
+        if (mgr != null && mgr.IsInCollectionRun)
+        {
+            Plugin.Logger.LogInfo("Collection run: player left the level via PauseLeave; aborting run.");
+            mgr.AbortCollectionRun();
+        }
 
-        Plugin.Logger.LogInfo("Collection run: player left the level via PauseLeave; aborting run.");
-        mgr.AbortCollectionRun();
+        // Leaving a level invalidates any held scene. Most importantly a staged
+        // chained hold still has an allowSceneActivation=false LoadSceneAsync
+        // pending; if it survives into the menu, Unity 2017.4 lets it block the
+        // menu's own scene load and every later level entry (menu stays on the
+        // old level / next load hangs forever). Drop it BEFORE App.PauseLeave
+        // starts the menu load so the pending op is released first.
+        var preload = Preload.ScenePreloadManager.Instance;
+        if (preload != null)
+            preload.ForceDrop("PauseLeave: leaving level");
     }
 }

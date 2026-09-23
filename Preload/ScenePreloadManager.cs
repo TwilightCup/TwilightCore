@@ -309,6 +309,32 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         return PreloadStillWanted();
     }
 
+    /// <summary>
+    /// Whether an existing hold should still exist in the CURRENT app/match
+    /// state. This is deliberately more lenient than <see cref="HoldStillWanted"/>
+    /// for chained holds: opening the pause menu (GameState.Paused) must not
+    /// destroy a hold, but aborting the run or returning to the main menu must.
+    /// A staged chained hold that survives into the menu is especially harmful —
+    /// its <c>allowSceneActivation=false</c> LoadSceneAsync is still pending, and
+    /// Unity 2017.4 lets a pending unactivated scene load block every later
+    /// <c>LoadSceneAsync</c> (the menu can stay on the old level and the next
+    /// level entry can load forever).
+    /// </summary>
+    private static bool HoldStillWantedForCurrentState(HeldScene held)
+    {
+        if (held.Chained)
+        {
+            var mgr = CollectionManager.Instance;
+            if (mgr == null || !mgr.IsInCollectionRun) return false;
+            if (App.state == AppSate.Menu) return false;
+            string next = mgr.NextLevelId;
+            return next != null && string.Equals(
+                CollectionManager.CanonicalizeLevelId(next), held.LevelId, StringComparison.Ordinal);
+        }
+        if (!held.MatchDriven) return true;
+        return PreloadStillWanted();
+    }
+
     // ── M3 chained driver ────────────────────────────────────────────────────
 
     /// <summary>
@@ -323,6 +349,22 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     private void Update()
     {
         _frameSpikes.Sample(Time.unscaledDeltaTime);   // no-op unless a chained-hold window is active
+
+        // Drop a hold as soon as the current app/match state no longer wants it —
+        // most importantly when the player leaves the level / aborts the run /
+        // returns to the main menu while a chained (possibly staged) hold exists.
+        // Leaving a staged chained hold behind is fatal on Unity 2017.4: its
+        // allowSceneActivation=false LoadSceneAsync is still pending and blocks
+        // every later scene load, so the menu can stay on the old level and the
+        // next level entry hangs loading forever. Releasing + discarding the
+        // staged op here unblocks it.
+        if (!_dropRequested && !_swapRunning && _held != null && !HoldStillWantedForCurrentState(_held))
+        {
+            ForceDrop(_held.Chained
+                ? "chained hold no longer wanted (run aborted / returned to menu)"
+                : "match hold no longer wanted");
+            return;
+        }
 
         if (!TwilightConfig.EnableChainedPreload.Value) return;
         if (!EnableScenePreloadOn) return;
@@ -688,6 +730,17 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                     FailPipeline(held, held.FailDetail ?? "staged op completed but capture was not dormant");
                     yield break;
                 }
+                if (_dropRequested || !HoldStillWanted(held))
+                {
+                    // A drop arrived while the staged op was still in its
+                    // background-load phase (ForceDrop may have already released
+                    // allowSceneActivation to unblock the menu load). Do not keep
+                    // the just-completed scene — discard it like any other drop.
+                    DiscardLoadedScene(held, _dropRequested
+                        ? "dropped during staged background load (eager fallback)"
+                        : "hold no longer wanted after staged background load (eager fallback)");
+                    yield break;
+                }
                 Plugin.Logger.LogWarning("[Preload] staged chained load: allowSceneActivation=false was ignored/not needed — falling back to eager dormant hold.");
                 PerformPostLoadFreeze(held);
                 Plugin.Logger.LogInfo(
@@ -745,6 +798,11 @@ internal sealed class ScenePreloadManager : MonoBehaviour
                 if (held.State != HeldSceneState.Dormant)
                 {
                     FailPipeline(held, held.FailDetail ?? "staged activation capture failed");
+                    yield break;
+                }
+                if (_dropRequested)
+                {
+                    DiscardLoadedScene(held, "dropped during staged activation");
                     yield break;
                 }
 
@@ -1044,6 +1102,17 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         // Any other load (e.g. returning to the menu from a practice level) may
         // make the preload gates newly satisfiable. A Single-mode load also means
         // a held scene is about to be destroyed — OnSceneUnloaded handles that.
+        // If a STAGED hold is still waiting with allowSceneActivation=false, the
+        // external load does NOT unload it (the scene is not in the scene list
+        // yet); it must be released and discarded here, or its pending op can
+        // block every later scene load on Unity 2017.4. The same applies to any
+        // other non-dormant in-flight hold: an unrelated scene load means the
+        // hold's context is gone.
+        if (_held != null
+            && _held.State != HeldSceneState.Dormant
+            && _held.State != HeldSceneState.Invalid
+            && _held.State != HeldSceneState.Consumed)
+            ForceDrop("external scene load while a hold is in flight");
         // An external load also rebuilds the probe structure from scratch —
         // any uniform we wrote into the previous set is gone.
         _probeSetHoldsUniform = false;
@@ -1169,6 +1238,25 @@ internal sealed class ScenePreloadManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Release a staged (<c>allowSceneActivation=false</c>) load operation right
+    /// away. Used by <see cref="ForceDrop"/> so the pending op stops blocking
+    /// other scene loads before the next coroutine iteration.
+    /// </summary>
+    private static void ReleaseStagedOperation(HeldScene held)
+    {
+        if (held == null || held.LoadOp == null) return;
+        // LoadingScene covers the staged background-load phase (allowSceneActivation
+        // is still false there) as well as an eager load (already true — setting it
+        // again is a no-op); ReadyToActivate/Activating are the other staged phases.
+        if (held.State != HeldSceneState.LoadingScene
+            && held.State != HeldSceneState.ReadyToActivate
+            && held.State != HeldSceneState.Activating) return;
+        held.State = HeldSceneState.Activating;
+        try { held.LoadOp.allowSceneActivation = true; }
+        catch (Exception e) { Plugin.Logger.LogWarning("[Preload] failed to release staged drop: " + e.Message); }
+    }
+
+    /// <summary>
     /// Drop the current hold. If the pipeline is mid-flight it observes the
     /// request and cleans up once its scene op completes (in-flight ops can't be
     /// cancelled on Unity 2017.4).
@@ -1178,6 +1266,14 @@ internal sealed class ScenePreloadManager : MonoBehaviour
         if (_held == null && _pipeline == null) return;
         Plugin.Logger.LogInfo("[Preload] drop: " + reason);
         _dropRequested = true;
+
+        // Release a staged op immediately (not on the next pipeline iteration):
+        // if the player is leaving to the menu in this same call stack, the
+        // menu's LoadSceneAsync must not run while an allowSceneActivation=false
+        // op is still pending — Unity 2017.4 lets that pending op block every
+        // later scene load (menu stays on the old level / next load hangs).
+        ReleaseStagedOperation(_held);
+
         if (_pipeline == null)
         {
             // Direct release — no pipeline will observe the flag, so honour the
@@ -1185,6 +1281,19 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             // MaybeStartPreload's gate forever (round 2+: new pick_announced
             // dropped the previous hold directly, and no preload ever ran again).
             var held = _held;
+
+            // Defensive: a staged hold whose pipeline is gone (should not happen
+            // in the normal flow) still has a pending allowSceneActivation=false
+            // op. Do NOT just drop the reference — that would leave the op
+            // dangling and it can block every later scene load on Unity 2017.4.
+            // Complete + discard it through a small coroutine instead.
+            if (held != null && held.LoadOp != null && !held.LoadOp.isDone
+                && (held.State == HeldSceneState.ReadyToActivate || held.State == HeldSceneState.Activating))
+            {
+                StartCoroutine(CompleteAndDiscardStagedHold(held, reason));
+                return;   // _dropRequested stays set until the coroutine exits
+            }
+
             _held = null;
             if (held != null)
             {
@@ -1194,6 +1303,30 @@ internal sealed class ScenePreloadManager : MonoBehaviour
             }
             _dropRequested = false;
         }
+    }
+
+    /// <summary>
+    /// Defensive fallback for a staged hold whose pipeline is gone: release the
+    /// pending <c>allowSceneActivation=false</c> op, wait for the sceneLoaded
+    /// capture, then discard the resulting scene. Used only when
+    /// <see cref="ForceDrop"/> is asked to drop a staged hold with no running
+    /// pipeline, so the pending op can never be left behind to block later
+    /// scene loads.
+    /// </summary>
+    private IEnumerator CompleteAndDiscardStagedHold(HeldScene held, string reason)
+    {
+        held.State = HeldSceneState.Activating;
+        if (held.LoadOp != null)
+        {
+            try { held.LoadOp.allowSceneActivation = true; }
+            catch (Exception e) { Plugin.Logger.LogWarning("[Preload] failed to release staged drop: " + e.Message); }
+            while (!_gotPendingScene) yield return null;
+        }
+
+        if (held.State != HeldSceneState.Dormant)
+            FailPipeline(held, held.FailDetail ?? "staged direct drop capture failed");
+        else
+            DiscardLoadedScene(held, reason);
     }
 
     // ── GO-time swap-in hook (调研 §3.2) ─────────────────────────────────────
