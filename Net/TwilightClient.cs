@@ -294,16 +294,12 @@ public class TwilightClient : MonoBehaviour
 
     private void SendUtcTimestamp()
     {
-        long utcMs = (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
         Send(new Dictionary<string, object>
         {
             { "type", Msg.UtcTimestamp },
-            { "utc_ms", utcMs },
+            { "utc_ms", UtcClock.NowMs() },
         });
     }
-
-    private static readonly DateTime UnixEpoch =
-        new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     // ── Reconnect ───────────────────────────────────────────────────
 

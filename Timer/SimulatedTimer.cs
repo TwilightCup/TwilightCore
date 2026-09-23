@@ -111,6 +111,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                 { "type", Msg.ProjectComplete },
                 { "round_id", _roundId },
                 { "final_total_ms", _accumulatedMs },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo($"[SimTimer] project_complete (manual, final={_accumulatedMs}ms).");
         }
@@ -160,6 +161,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                     { "type", Msg.AttemptSkip },
                     { "round_id", _roundId },
                     { "attempt_index", idx },
+                    { "utc_ms", UtcClock.NowMs() },
                 });
                 Plugin.Logger.LogInfo($"[SimTimer] attempt_skip idx={idx}.");
             }
@@ -172,6 +174,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                     { "round_id", _roundId },
                     { "level_index", idx }, // acts as attempt index for SINGLE
                     { "this_level_ms", ms },
+                    { "utc_ms", UtcClock.NowMs() },
                 });
                 Plugin.Logger.LogInfo($"[SimTimer] attempt {idx} time={ms}ms.");
             }
@@ -194,6 +197,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                 { "level_index", idx },
                 { "this_level_ms", ms },
                 { "total_ms", _accumulatedMs },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo($"[SimTimer] level {idx} time={ms}ms total={_accumulatedMs}ms.");
         }
@@ -222,6 +226,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                 { "type", Msg.ProjectComplete },
                 { "round_id", _roundId },
                 { "final_total_ms", final ?? _accumulatedMs },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo($"[SimTimer] project_complete (final={((final ?? _accumulatedMs)).ToString()}ms).");
         }
@@ -246,6 +251,7 @@ internal sealed class SimulatedTimer : IRoundReporter
                 { "type", Msg.AttemptSkip },
                 { "round_id", _roundId },
                 { "attempt_index", _attemptDone },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo($"[SimTimer] last attempt abandoned → attempt_skip idx={_attemptDone}.");
             SendProjectComplete();
@@ -270,6 +276,7 @@ internal sealed class SimulatedTimer : IRoundReporter
             {
                 { "type", Msg.ProjectComplete },
                 { "round_id", _roundId },
+                { "utc_ms", UtcClock.NowMs() },
             };
             Send(payload);
             Plugin.Logger.LogInfo("[SimTimer] abort with valid attempts → project_complete.");
@@ -288,6 +295,7 @@ internal sealed class SimulatedTimer : IRoundReporter
             { "type", Msg.ForfeitSignal },
             { "round_id", _roundId },
             { "reason", reason },
+            { "utc_ms", UtcClock.NowMs() },
         });
         Plugin.Logger.LogInfo($"[SimTimer] forfeit_signal reason={reason}.");
     }
@@ -299,6 +307,7 @@ internal sealed class SimulatedTimer : IRoundReporter
         {
             { "type", Msg.ProjectComplete },
             { "round_id", _roundId },
+            { "utc_ms", UtcClock.NowMs() },
         });
         Plugin.Logger.LogInfo("[SimTimer] project_complete (single).");
     }

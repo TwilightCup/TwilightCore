@@ -133,6 +133,7 @@ namespace TwilightCore.Timer
                     { "type", Msg.ProjectComplete },
                     { "round_id", _roundId },
                     { "final_total_ms", _provider.RoundTotalMs },
+                    { "utc_ms", UtcClock.NowMs() },
                 });
                 Plugin.Logger.LogInfo($"[Timer] project_complete (manual, final={_provider.RoundTotalMs}ms).");
             }
@@ -150,6 +151,10 @@ namespace TwilightCore.Timer
                 { "round_id", _roundId },
                 { "level_index", seg.Index }, // acts as attempt index for SINGLE
                 { "this_level_ms", seg.DurationMs },
+                // Node detection instant — the backend requires it on every node
+                // event (400 "Malformed message" otherwise) and uses it as the
+                // referee/director clock source.
+                { "utc_ms", UtcClock.NowMs() },
             };
             if (!_isSingle) payload["total_ms"] = seg.TotalMs;
 
@@ -185,6 +190,7 @@ namespace TwilightCore.Timer
                 { "type", Msg.AttemptSkip },
                 { "round_id", _roundId },
                 { "attempt_index", index },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo($"[Timer] attempt {index} skipped.");
 
@@ -233,6 +239,7 @@ namespace TwilightCore.Timer
                     { "type", Msg.ProjectComplete },
                     { "round_id", _roundId },
                     { "final_total_ms", totalMs },
+                    { "utc_ms", UtcClock.NowMs() },
                 });
                 Plugin.Logger.LogInfo($"[Timer] project_complete (final={totalMs}ms).");
             }
@@ -259,6 +266,7 @@ namespace TwilightCore.Timer
                         { "type", Msg.AttemptSkip },
                         { "round_id", _roundId },
                         { "attempt_index", index },
+                        { "utc_ms", UtcClock.NowMs() },
                     });
                     Plugin.Logger.LogInfo($"[Timer] last attempt abandoned → attempt_skip idx={index}.");
                 }
@@ -272,6 +280,7 @@ namespace TwilightCore.Timer
                     { "type", Msg.ForfeitSignal },
                     { "round_id", _roundId },
                     { "reason", _isSingle ? ForfeitReason.SingleExit0Valid : ForfeitReason.MultiExit },
+                    { "utc_ms", UtcClock.NowMs() },
                 });
                 Plugin.Logger.LogInfo($"[Timer] forfeit (incomplete exit at {index}).");
             }
@@ -297,6 +306,7 @@ namespace TwilightCore.Timer
             {
                 { "type", Msg.ProjectComplete },
                 { "round_id", _roundId },
+                { "utc_ms", UtcClock.NowMs() },
             });
             Plugin.Logger.LogInfo("[Timer] project_complete (single).");
         }

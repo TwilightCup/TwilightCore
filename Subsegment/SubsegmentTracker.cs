@@ -113,6 +113,8 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     private bool _wakeBlockedLogged;     // one-shot debug for an Armed level waiting for wake-up
     private bool _humanMissingLogged;    // one-shot debug for an active round with no Localplayer
     private float _lastSubsegSendRealtime = -1f; // last sample/hit/live-time send (breaker recency)
+    private float _lastCorrelatedErrorRealtime = -1f; // last 400 that followed a telemetry send
+    private int _correlatedErrorStreak;               // consecutive such 400s (see NotifyServerError)
 
     // ── Wiring ───────────────────────────────────────────────────────
 
@@ -195,6 +197,8 @@ internal sealed class SubsegmentTracker : MonoBehaviour
         _lastOppSeqByLevel.Clear();
         _recentGaps.Clear();
         _lastSubsegSendRealtime = -1f;
+        _lastCorrelatedErrorRealtime = -1f;
+        _correlatedErrorStreak = 0;
         _wakeBlockedLogged = false;
         _humanMissingLogged = false;
     }
@@ -266,9 +270,14 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     /// <summary>Server error routed from MatchController — trips the old-server breaker on a 400.</summary>
     public void NotifyServerError(int code)
     {
-        // A 400 shortly after a subsegment send means the server rejected the
-        // message itself (unknown type = not upgraded); other 400s (e.g. a bad
-        // ! command) never follow a subsegment send and must not trip this.
+        // A 400 shortly after a telemetry send means the server rejected the
+        // message itself (unknown type = not upgraded). But other 400s (a bad
+        // ! command, or a node event rejected for a newer required field) can
+        // also land inside the window right after a send, so ONE correlated 400
+        // is not enough: only a repeat within ErrorStreakWindowSeconds proves
+        // the server systematically rejects the telemetry type and trips the
+        // breaker. An old backend 400s every 1 Hz telemetry message, so a
+        // genuine mismatch still trips within a second or two.
         if (code != 400)
         {
             DebugLog($"server error {code} ignored (not subsegment-related)");
@@ -280,13 +289,28 @@ internal sealed class SubsegmentTracker : MonoBehaviour
             DebugLog("server 400 before any subsegment send — ignored");
             return;
         }
-        if (Time.realtimeSinceStartup - _lastSubsegSendRealtime > 3f)
+        float now = Time.realtimeSinceStartup;
+        if (now - _lastSubsegSendRealtime > ErrorCorrelationSeconds)
         {
             DebugLog("server 400 too far from a subsegment send — ignored");
             return;
         }
+
+        if (_lastCorrelatedErrorRealtime >= 0f
+            && now - _lastCorrelatedErrorRealtime <= ErrorStreakWindowSeconds)
+            _correlatedErrorStreak++;
+        else
+            _correlatedErrorStreak = 1;
+        _lastCorrelatedErrorRealtime = now;
+
+        if (_correlatedErrorStreak < ErrorStreakToTrip)
+        {
+            DebugLog($"server 400 after a telemetry send ({_correlatedErrorStreak}/{ErrorStreakToTrip}) — waiting for a repeat before tripping");
+            return;
+        }
+
         _disabledByServer = true;
-        DebugLog("server 400 right after a subsegment send — tripping old-server breaker");
+        DebugLog("repeated server 400s after telemetry sends — tripping old-server breaker");
         Log("server rejected subsegment messages (not upgraded?) — sampling disabled until next round.");
     }
 
@@ -615,6 +639,17 @@ internal sealed class SubsegmentTracker : MonoBehaviour
     /// crossing wins); this only caps the message rate per plane.
     /// </summary>
     private const float RehitDebounceSeconds = 0.2f;
+
+    /// <summary>A 400 must arrive within this long after a telemetry send to be
+    /// treated as a rejection of that message.</summary>
+    private const float ErrorCorrelationSeconds = 3f;
+
+    /// <summary>Correlated 400s must recur within this window to count as a
+    /// systematic rejection (see <see cref="NotifyServerError"/>).</summary>
+    private const float ErrorStreakWindowSeconds = 3f;
+
+    /// <summary>Correlated 400s needed before the old-server breaker trips.</summary>
+    private const int ErrorStreakToTrip = 2;
 
     private Vector3 DisplacementSinceLastSample(Vector3 pos) =>
         _hasLastSamplePos ? MaybeZeroed(pos - _lastSamplePos) : Vector3.zero;
