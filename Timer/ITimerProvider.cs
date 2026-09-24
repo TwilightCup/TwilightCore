@@ -7,9 +7,11 @@ namespace TwilightCore.Timer
     public enum RoundProjectType { Multi = 0, Single = 1 }
 
     /// <summary>
-    /// 回合 pick 信息（服务端 round_start pick 载荷的子集；黄昏杯词条已按
-    /// 映射表转换为提供方标签 id：Checkpoint / NoCheckpoint / Jumpless 透传，
-    /// Glitchless / Pinch / No EC / Achievement 丢弃）。
+    /// 回合 pick 信息（服务端 round_start pick 载荷的子集；黄昏杯词条已转换为
+    /// 提供方标签 id）。映射优先委托给实现了 <see cref="ITimerTagProvider"/>
+    /// 的提供方（其自有的标签注册表才是权威，因此 Glitchless / No EC 以及
+    /// 任何扩展标签都能透传）；未实现该接口的旧提供方退化为内置
+    /// Checkpoint / NoCheckpoint / Jumpless 映射。
     /// </summary>
     public sealed class RoundPickInfo
     {
@@ -101,6 +103,24 @@ namespace TwilightCore.Timer
     {
         /// <summary>本回合/本局现实时间累计（毫秒）。</summary>
         long RealTimeMs { get; }
+    }
+
+    /// <summary>
+    /// 可选扩展（服务端词条解析）：<see cref="ITimerProvider"/> 实现本接口即声明
+    /// 自己拥有权威的标签集（含扩展插件运行时注册的标签），由 TwilightCore 在
+    /// 解析服务端 pick 的 <c>tags[]</c> 时回调，而不是依赖 TwilightCore 内置的
+    /// 固定映射表。这样计时器插件新增的任何标签都能从服务端接收，无需修改
+    /// TwilightCore（黄昏杯适配需求 T5.4/T5.5：未知 id 仍由提供方自行忽略）。
+    /// </summary>
+    public interface ITimerTagProvider
+    {
+        /// <summary>
+        /// 把服务端词条字符串（如 <c>"No Checkpoint"</c>、<c>"glitchless"</c>、
+        /// <c>"No EC"</c>）解析为提供方的规范标签 id；无法识别时返回 null/空串
+        /// （该词条被丢弃）。实现应做大小写/空格/连字符/下划线的宽松匹配。
+        /// 可从任意线程调用，不得抛异常。
+        /// </summary>
+        string ResolveServerTag(string serverTag);
     }
 
     /// <summary>
