@@ -112,6 +112,7 @@ Open the in-game console with `` ` `` (backquote) or `F1`.
 Chat:
 
 - **Ctrl+T** (configurable via `Chat.ToggleHotkey`, e.g. `Ctrl+Shift+Y`, `F8`) opens/closes the full chat console (usable both in menus and in-round). Type text and press Enter to send; `!ready`, `!roll`, etc. are ordinary chat text. While the console is open it captures the keyboard, so the game will not respond to grab/jump (movement keys may still work — stop moving before typing). Hotkey changes take effect via `twi reload`.
+- Typing `!ready` while still inside a level (practice is free during PREP) returns you to the main menu first — the preload and the round launch only run from there.
 - When a message arrives and the console is not open, a **log-only popup (no input box)** appears for `Chat.PopupSecs` (default 5 s) and then fades out; new messages extend it. Can be disabled with `Chat.PopupEnabled`.
 
 ## Subsegment Real-Time Gap Tracking
@@ -183,7 +184,8 @@ At `round_start`, it only performs a lightweight "swap-in" (activate the scene +
 so the player is **already in the level when the countdown ends**. How it works:
 
 - **Trigger**: receives `pick_announced` from the server (the referee's pick sends the collection early) plus your own `!ready`,
-  and the player is at the main menu. After ready-lock is active, manual level entry is locked, so preload cannot be accidentally disrupted.
+  and the player is at the main menu. If `!ready` was typed from inside a practice level, the plugin returns to the main menu first —
+  the preload only starts once the player is back there (otherwise it would fail). After ready-lock is active, manual level entry is locked, so preload cannot be accidentally disrupted.
 - **Reporting**: the preload state machine reports `preload_report` to the server (`in_progress` / `done` / `failed` / `na`);
   SINGLE picks always report `na`. The server uses this as the round-start gate (the auto countdown begins only after both players' preloads are done).
 - **Degradation**: preload is an optimization, not a dependency — any failure (not subscribed, download failure, scene error, pick change)
