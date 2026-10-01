@@ -98,6 +98,12 @@ public class Plugin : BaseUnityPlugin
         // Patches: false-start lock (chat is a standalone OnGUI console, no NetChat patching).
         ReadyLockPatches.Apply();
 
+        // Own !ready while still inside a practice level returns the player to
+        // the main menu (the preload and the round launch only work from there).
+        var readyMenu = new GameObject("TwilightReadyMenuWatchdog");
+        DontDestroyOnLoad(readyMenu);
+        readyMenu.AddComponent<Ready.ReadyMenuWatchdog>();
+
         // Menu fall-speed limiter: while connected to the match server, clamp the
         // menu ragdoll's downward speed (anti-fall off the menu scenery).
         var fallLimiter = new GameObject("TwilightMenuFallLimiter");
